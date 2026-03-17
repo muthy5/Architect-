@@ -1,146 +1,171 @@
-"""
-resolver.py — Conflict detection and resolution for TechnicalAtom sets.
+“””
+resolver.py  –  The Operational Architect
+Conflict Detection & Resolution Engine
+“””
 
-Conflict detection keys on (category, parameter_lowercase) so two files calling
-the same spec by the same name but with different values will always be caught.
-"""
+from **future** import annotations
 
-from __future__ import annotations
-
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Dict, List, Optional, Tuple
 
-from engine import TechnicalAtom, normalise_category
+from engine import TechnicalAtom
 
+# ──────────────────────────────────────────────
 
-# ---------------------------------------------------------------------------
-# Conflict dataclass
-# ---------------------------------------------------------------------------
+# Data Structures
+
+# ──────────────────────────────────────────────
 
 @dataclass
 class Conflict:
-    """Represents a parameter conflict between two or more atoms."""
+“”“A detected conflict between atoms from different source files.”””
 
-    category: str
-    parameter: str
-    atoms: list[TechnicalAtom] = field(default_factory=list)
-    resolution: str | None = None  # "keep_first", "keep_last", "manual:<value>", …
-    resolved_atom: TechnicalAtom | None = None
+```
+conflict_id: str
+category: str
+parameter: str
+# Each entry: (source_file, value, full_atom)
+candidates: List[Tuple[str, str, TechnicalAtom]] = field(default_factory=list)
+resolved: bool = False
+resolved_atom: Optional[TechnicalAtom] = None
 
-    @property
-    def key(self) -> str:
-        return f"{self.category}||{self.parameter.strip().lower()}"
+def short_label(self) -> str:
+    return f"[{self.category}] {self.parameter}"
+```
 
-    @property
-    def is_resolved(self) -> bool:
-        return self.resolved_atom is not None
+@dataclass
+class ResolutionState:
+“”“Tracks all detected conflicts and their resolution status.”””
 
+```
+conflicts: List[Conflict] = field(default_factory=list)
 
-# ---------------------------------------------------------------------------
+@property
+def all_resolved(self) -> bool:
+    return all(c.resolved for c in self.conflicts)
+
+@property
+def unresolved_count(self) -> int:
+    return sum(1 for c in self.conflicts if not c.resolved)
+
+@property
+def total_count(self) -> int:
+    return len(self.conflicts)
+```
+
+# ──────────────────────────────────────────────
+
 # Detection
-# ---------------------------------------------------------------------------
 
-def detect_conflicts(atoms: list[TechnicalAtom]) -> list[Conflict]:
-    """Find all parameter-level conflicts across atoms.
+# ──────────────────────────────────────────────
 
-    Two atoms conflict when they share the same canonical category and
-    lower-cased parameter but differ in value.
-    """
-    buckets: dict[str, list[TechnicalAtom]] = defaultdict(list)
-    for atom in atoms:
-        buckets[atom.conflict_key()].append(atom)
+def detect_conflicts(all_atoms: List[TechnicalAtom]) -> ResolutionState:
+“””
+Scan all extracted atoms and group any that share (category, parameter)
+but carry different values from different source files.
+“””
+# Key → list of atoms
+index: Dict[Tuple[str, str], List[TechnicalAtom]] = {}
+for atom in all_atoms:
+key = (atom.category.strip(), atom.parameter.strip().lower())
+index.setdefault(key, []).append(atom)
 
-    conflicts: list[Conflict] = []
-    for key, group in buckets.items():
-        if len(group) < 2:
-            continue
-        # Check that at least two distinct values exist
-        values = {a.value.strip().lower() for a in group}
-        if len(values) < 2:
-            continue
-        cat, param = key.split("||", 1)
-        conflicts.append(Conflict(category=cat, parameter=param, atoms=group))
+```
+state = ResolutionState()
+conflict_counter = 0
 
-    return conflicts
+for (category, parameter), atoms in index.items():
+    # Only flag if there are multiple distinct values from different files
+    unique_vals = {a.value.strip() for a in atoms}
+    unique_files = {a.source_file for a in atoms}
 
+    if len(unique_vals) > 1 and len(unique_files) > 1:
+        conflict_counter += 1
+        cid = f"CONFLICT_{conflict_counter:03d}"
+        candidates = [(a.source_file, a.value, a) for a in atoms]
+        state.conflicts.append(
+            Conflict(
+                conflict_id=cid,
+                category=category,
+                parameter=atoms[0].parameter,  # preserve original casing
+                candidates=candidates,
+            )
+        )
 
-# ---------------------------------------------------------------------------
-# Resolution strategies
-# ---------------------------------------------------------------------------
+return state
+```
 
-ResolutionStrategy = Literal[
-    "keep_first",
-    "keep_last",
-    "keep_highest_confidence",
-    "manual",
-]
+# ──────────────────────────────────────────────
 
+# Resolution
 
-def resolve_conflict(
-    conflict: Conflict,
-    strategy: ResolutionStrategy = "keep_highest_confidence",
-    manual_value: str | None = None,
-) -> Conflict:
-    """Apply a resolution strategy to a Conflict and return it updated."""
-    if not conflict.atoms:
-        return conflict
+# ──────────────────────────────────────────────
 
-    if strategy == "keep_first":
-        winner = conflict.atoms[0]
-    elif strategy == "keep_last":
-        winner = conflict.atoms[-1]
-    elif strategy == "keep_highest_confidence":
-        winner = max(conflict.atoms, key=lambda a: a.confidence)
-    elif strategy == "manual":
-        winner = conflict.atoms[0].model_copy()
-        if manual_value is not None:
-            winner.value = manual_value
-    else:
-        raise ValueError(f"Unknown strategy: {strategy}")
-
-    conflict.resolved_atom = winner
-    conflict.resolution = (
-        f"manual:{manual_value}" if strategy == "manual" else strategy
-    )
-    return conflict
-
-
-# ---------------------------------------------------------------------------
-# Apply resolutions
-# ---------------------------------------------------------------------------
+def resolve_conflict(conflict: Conflict, chosen_index: int) -> TechnicalAtom:
+“””
+Mark a conflict as resolved using the candidate at chosen_index.
+Returns the winning TechnicalAtom.
+“””
+_, _, winning_atom = conflict.candidates[chosen_index]
+conflict.resolved = True
+conflict.resolved_atom = winning_atom
+return winning_atom
 
 def apply_resolutions(
-    atoms: list[TechnicalAtom],
-    conflicts: list[Conflict],
-) -> list[TechnicalAtom]:
-    """Return a new atom list with conflicts replaced by their resolved atoms.
+taxonomy: Dict[str, List[TechnicalAtom]],
+state: ResolutionState,
+) -> Dict[str, List[TechnicalAtom]]:
+“””
+Return a new taxonomy where conflicting atoms have been replaced
+by the user-selected winners.  Atoms from losing files are dropped.
+“””
+# Build a lookup: (category, parameter_lower) → winning atom
+winners: Dict[Tuple[str, str], TechnicalAtom] = {}
+losers: Dict[Tuple[str, str], set] = {}  # key → set of losing (file, value) pairs
 
-    Non-conflicting atoms are kept as-is.  For each resolved conflict the
-    winning atom replaces all members of that conflict group.
-    """
-    # Build a set of conflict keys that have been resolved
-    resolved_keys: dict[str, TechnicalAtom] = {}
-    conflicting_ids: set[int] = set()
+```
+for conflict in state.conflicts:
+    if not conflict.resolved or conflict.resolved_atom is None:
+        continue
+    key = (conflict.category, conflict.parameter.strip().lower())
+    winners[key] = conflict.resolved_atom
+    losing_vals = {
+        (src, val)
+        for src, val, _ in conflict.candidates
+        if (src, val)
+        != (conflict.resolved_atom.source_file, conflict.resolved_atom.value)
+    }
+    losers[key] = losing_vals
 
-    for c in conflicts:
-        if not c.is_resolved:
-            continue
-        resolved_keys[c.key] = c.resolved_atom  # type: ignore[assignment]
-        for a in c.atoms:
-            conflicting_ids.add(id(a))
-
-    result: list[TechnicalAtom] = []
-    seen_keys: set[str] = set()
-
+resolved_taxonomy: Dict[str, List[TechnicalAtom]] = {}
+for section, atoms in taxonomy.items():
+    filtered: List[TechnicalAtom] = []
     for atom in atoms:
-        if id(atom) in conflicting_ids:
-            key = atom.conflict_key()
-            if key in resolved_keys and key not in seen_keys:
-                result.append(resolved_keys[key])
-                seen_keys.add(key)
-            # Skip other members of the conflict group
-            continue
-        result.append(atom)
+        key = (atom.category, atom.parameter.strip().lower())
+        if key in winners:
+            # Replace with winner (add only once)
+            winner = winners[key]
+            if winner not in filtered:
+                filtered.append(winner)
+        elif key in losers and (atom.source_file, atom.value) in losers[key]:
+            # This is a losing candidate – drop it
+            pass
+        else:
+            filtered.append(atom)
+    resolved_taxonomy[section] = filtered
 
-    return result
+return resolved_taxonomy
+```
+
+# ──────────────────────────────────────────────
+
+# Flat atom list from resolved taxonomy
+
+# ──────────────────────────────────────────────
+
+def flatten_taxonomy(taxonomy: Dict[str, List[TechnicalAtom]]) -> List[TechnicalAtom]:
+“”“Flatten taxonomy dict into a single ordered list of atoms.”””
+result: List[TechnicalAtom] = []
+for section in taxonomy:
+result.extend(taxonomy[section])
+return result
