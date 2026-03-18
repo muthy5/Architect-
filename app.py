@@ -56,6 +56,12 @@ from chemistry import (
     build_chemistry_instructions,
     is_chemistry_taxonomy,
 )
+from layman_v3 import (
+    LaymanV3Brain,
+    ValidationReport,
+    fix_v3_document,
+    validate_v3_document,
+)
 
 # ──────────────────────────────────────────────
 # Page Config
@@ -940,9 +946,10 @@ st.markdown("---")
 
 # ── Tab Layout ──────────────────────────────────
 
-tab_extract, tab_resolve, tab_mpr, tab_chem, tab_gap, tab_export = st.tabs(
+tab_extract, tab_resolve, tab_mpr, tab_chem, tab_v3, tab_gap, tab_export = st.tabs(
     ["\u2460 Extract", "\u2461 Resolve Conflicts", "\u2462 MPR View",
-     "\u2463 Chemistry Instructions", "\u2464 Gap Audit", "\u2465 Export"]
+     "\u2463 Chemistry Instructions", "\u2464 Layman Doc v3",
+     "\u2465 Gap Audit", "\u2466 Export"]
 )
 
 # ════════════════════════════════════════════════
@@ -1607,7 +1614,258 @@ with tab_chem:
                     st.markdown(ts_html, unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════
-# TAB 5 – GAP AUDIT
+# TAB 5 – LAYMAN DOC v3
+# ════════════════════════════════════════════════
+
+with tab_v3:
+    st.markdown("### Layman Procedural Document v3")
+    st.markdown(
+        "<p style='color:#4a5568; font-size:0.82rem;'>"
+        "Extracts a full structured procedure document conforming to "
+        "layman-doc-schema-v3 — phases, sensory checkpoints, gates, "
+        "emergency shutdown, materials acquisition cards, and more."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    v3_file_texts: dict = st.session_state.get("file_texts", {})
+
+    if not v3_file_texts:
+        st.info("Upload and extract documents first (Tab \u2460).")
+    else:
+        v3_title = st.text_input(
+            "Procedure Title",
+            value="Chemistry Procedure",
+            key="v3_title_input",
+        )
+        v3_objective = st.text_input(
+            "Procedure Objective (one sentence)",
+            value="",
+            key="v3_objective_input",
+            placeholder="e.g. Synthesize aspirin from salicylic acid and acetic anhydride.",
+        )
+
+        if st.button(
+            "Generate Layman Doc v3",
+            use_container_width=True,
+            key="btn_v3_generate",
+        ):
+            if not api_key:
+                st.error("Please enter your API key in the sidebar.")
+            else:
+                combined_text = "\n\n---\n\n".join(
+                    f"[Source: {fname}]\n{txt}" for fname, txt in v3_file_texts.items()
+                )
+                combined_name = ", ".join(v3_file_texts.keys())
+
+                brain = LaymanV3Brain(
+                    provider=provider.lower(),
+                    api_key=api_key,
+                    model=model_override or None,
+                    tier=cost_tier,
+                )
+
+                with st.spinner("Extracting v3 layman procedural document\u2026"):
+                    try:
+                        raw_doc = brain.extract_v3(combined_text, combined_name)
+                        # Inject user-provided title/objective if supplied
+                        if v3_title:
+                            raw_doc.setdefault("meta", {})["title"] = v3_title
+                        if v3_objective:
+                            raw_doc.setdefault("meta", {})["objective"] = v3_objective
+                        report = validate_v3_document(raw_doc)
+                        fixed_doc = fix_v3_document(raw_doc, report)
+                        # Re-validate after fix
+                        report = validate_v3_document(fixed_doc)
+                        st.session_state["v3_document"] = fixed_doc
+                        st.session_state["v3_validation_report"] = report
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Extraction failed: {exc}")
+
+        # ── Display results ──
+        v3_doc: dict | None = st.session_state.get("v3_document")
+        v3_report: ValidationReport | None = st.session_state.get("v3_validation_report")
+
+        if v3_doc is not None and v3_report is not None:
+            # Metrics row
+            stats = v3_report.stats
+            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+            mc1.metric("Phases", stats.get("phases", 0))
+            mc2.metric("Steps", stats.get("steps", 0))
+            mc3.metric("Materials", stats.get("materials", 0))
+            mc4.metric("Warnings", stats.get("warnings", 0))
+            mc5.metric("Flags", len(v3_report.flags))
+
+            st.markdown("---")
+
+            # Validation report
+            if v3_report.errors:
+                with st.expander(
+                    f"Validation Errors ({len(v3_report.errors)})", expanded=True
+                ):
+                    for err in v3_report.errors:
+                        st.error(err)
+
+            if v3_report.warnings:
+                with st.expander(
+                    f"Validation Warnings ({len(v3_report.warnings)})"
+                ):
+                    for warn in v3_report.warnings:
+                        st.warning(warn)
+
+            if v3_report.flags:
+                with st.expander(f"Flagged Missing Data ({len(v3_report.flags)})"):
+                    for flag in v3_report.flags:
+                        st.caption(flag)
+
+            st.markdown("---")
+
+            # ── Section viewers ──
+
+            # Meta
+            meta = v3_doc.get("meta", {})
+            with st.expander("Meta", expanded=True):
+                st.markdown(f"**Title:** {meta.get('title', '')}")
+                st.markdown(f"**Objective:** {meta.get('objective', '')}")
+                st.markdown(
+                    f"**Estimated Total Time:** {meta.get('estimatedTotalTime', 'N/A')}"
+                )
+                risks = meta.get("crossCuttingRisks", [])
+                if risks:
+                    st.markdown(f"**Cross-cutting Risks:** {len(risks)}")
+                    for risk in risks:
+                        st.markdown(
+                            f"- **{risk.get('name', '')}**: {risk.get('risk', '')}"
+                        )
+
+            # Acquire — Materials
+            materials = v3_doc.get("acquire", {}).get("materials", [])
+            with st.expander(f"Materials ({len(materials)})"):
+                for mat in materials:
+                    st.markdown(
+                        f"**{mat.get('commonName', '')}** "
+                        f"({mat.get('quantity', '')}) "
+                        f"— {mat.get('sourceType', '')}"
+                    )
+                    vis = mat.get("visualId", {})
+                    if vis.get("appearance"):
+                        st.caption(f"Appearance: {vis['appearance']}")
+
+            # Stage — Zones
+            zones = v3_doc.get("stage", {}).get("zones", [])
+            with st.expander(f"Workspace Zones ({len(zones)})"):
+                for zone in zones:
+                    st.markdown(
+                        f"**{zone.get('name', '')}** — {zone.get('description', '')}"
+                    )
+
+            # Execute — Phases & Steps
+            phases = v3_doc.get("execute", {}).get("phases", [])
+            for phase in phases:
+                danger = phase.get("dangerLevel", "safe")
+                _danger_color = {
+                    "safe": "#22c55e", "caution": "#eab308", "dangerous": "#ef4444"
+                }.get(danger, "#6b7280")
+                phase_label = (
+                    f"{phase.get('name', 'Phase')} "
+                    f"({len(phase.get('steps', []))} steps)"
+                )
+                with st.expander(phase_label):
+                    st.markdown(
+                        f"<span style='color:{_danger_color}; font-weight:bold;'>"
+                        f"{danger.upper()}</span> &nbsp; "
+                        f"{phase.get('summary', '')}",
+                        unsafe_allow_html=True,
+                    )
+                    ppe = phase.get("ppeForPhase", [])
+                    if ppe:
+                        st.markdown(f"**PPE:** {', '.join(ppe)}")
+
+                    for step in phase.get("steps", []):
+                        step_html = "<div style='margin:0.5rem 0; padding:0.5rem; "
+                        step_html += "border-left:3px solid #3b82f6; padding-left:1rem;'>"
+                        step_html += (
+                            f"<strong>{html.escape(step.get('id', ''))}</strong> &nbsp; "
+                            f"{html.escape(step.get('action', ''))}"
+                        )
+                        dod = step.get("directionOfDirection")
+                        if dod:
+                            step_html += (
+                                f"<br><span style='color:#9ca3af; font-size:0.8rem;'>"
+                                f"HOW: {html.escape(dod)}</span>"
+                            )
+                        sc = step.get("sensoryCheckpoint", {})
+                        right = sc.get("right", {})
+                        wrong = sc.get("wrong", {})
+                        if right.get("description"):
+                            step_html += (
+                                f"<br><span style='color:#86efac; font-size:0.8rem;'>"
+                                f"RIGHT: {html.escape(right['description'])}</span>"
+                            )
+                        if wrong.get("description"):
+                            step_html += (
+                                f"<br><span style='color:#fca5a5; font-size:0.8rem;'>"
+                                f"WRONG: {html.escape(wrong['description'])}</span>"
+                            )
+                        for alert in step.get("alerts", []):
+                            _alert_color = {
+                                "red": "#ef4444", "yellow": "#eab308", "green": "#22c55e"
+                            }.get(alert.get("level", ""), "#6b7280")
+                            step_html += (
+                                f"<br><span style='color:{_alert_color}; "
+                                f"font-weight:bold; font-size:0.8rem;'>"
+                                f"ALERT: {html.escape(alert.get('message', ''))}"
+                                f"</span>"
+                            )
+                        step_html += "</div>"
+                        st.markdown(step_html, unsafe_allow_html=True)
+
+            # Verify
+            tests = v3_doc.get("verify", {}).get("tests", [])
+            with st.expander(f"Verification Tests ({len(tests)})"):
+                for test in tests:
+                    st.markdown(
+                        f"**{test.get('name', '')}**: {test.get('method', '')}"
+                    )
+
+            # Shutdown
+            sd_steps = v3_doc.get("shutdown", {}).get("steps", [])
+            with st.expander(f"Shutdown ({len(sd_steps)} steps)"):
+                for sd in sd_steps:
+                    st.markdown(f"- {sd.get('action', '')}")
+
+            # Emergency Shutdown
+            esd = v3_doc.get("emergencyShutdown", {})
+            esd_steps = esd.get("steps", [])
+            with st.expander(
+                f"Emergency Shutdown ({len(esd_steps)} steps)", expanded=False
+            ):
+                triggers = esd.get("triggerConditions", [])
+                if triggers:
+                    st.markdown("**Triggers:** " + ", ".join(triggers))
+                for es in esd_steps:
+                    st.markdown(
+                        f"**{es.get('verb', '')}** {es.get('target', '')} "
+                        f"— {es.get('detail', '')}"
+                    )
+
+            st.markdown("---")
+
+            # Download JSON
+            import json as _json
+
+            v3_json_str = _json.dumps(v3_doc, indent=2, ensure_ascii=False)
+            st.download_button(
+                label="Download v3 JSON",
+                data=v3_json_str.encode("utf-8"),
+                file_name=f"layman_v3_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+
+# ════════════════════════════════════════════════
+# TAB 6 – GAP AUDIT
 # ════════════════════════════════════════════════
 
 with tab_gap:
