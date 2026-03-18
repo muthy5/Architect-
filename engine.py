@@ -597,7 +597,10 @@ def _call_anthropic(
     if not api_key or not api_key.strip():
         raise ValueError("Anthropic API key is missing or empty")
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        timeout=120.0,  # 2-minute timeout to avoid indefinite hangs
+    )
     # Use prompt caching: mark the system prompt as cacheable so it's
     # reused across multiple file extractions in the same session.
     try:
@@ -612,6 +615,11 @@ def _call_anthropic(
                 }
             ],
             messages=[{"role": "user", "content": prompt}],
+        )
+    except anthropic.APITimeoutError:
+        raise TimeoutError(
+            f"Anthropic API timed out after 120s. "
+            f"Model: {model}, prompt length: {len(prompt)} chars"
         )
     except anthropic.BadRequestError as e:
         # Re-raise with a more descriptive message, especially for empty-body 400s
@@ -643,7 +651,7 @@ def _call_openai(
     if not api_key or not api_key.strip():
         raise ValueError("OpenAI API key is missing or empty")
 
-    client = openai.OpenAI(api_key=api_key)
+    client = openai.OpenAI(api_key=api_key, timeout=120.0)
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -652,6 +660,11 @@ def _call_openai(
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
+        )
+    except openai.APITimeoutError:
+        raise TimeoutError(
+            f"OpenAI API timed out after 120s. "
+            f"Model: {model}, prompt length: {len(prompt)} chars"
         )
     except openai.BadRequestError as e:
         detail = str(e) if str(e) else "Bad Request"
@@ -714,9 +727,14 @@ def call_llm(
         )
         return (p, s, m, k, mt), kwargs
 
+    def _longer_timeout(args, kwargs, error):
+        """No-op handler — the retry itself gives the API another chance."""
+        return args, kwargs
+
     recovery_handlers = {
         "reduce_input_size": _reduce_input,
         "add_json_instruction": _add_json_instruction,
+        "retry_with_longer_timeout": _longer_timeout,
     }
 
     return healer.execute_with_healing(
