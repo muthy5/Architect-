@@ -537,21 +537,35 @@ def _call_anthropic(
 ) -> str:
     import anthropic
 
+    if not prompt or not prompt.strip():
+        raise ValueError("Cannot call Anthropic API with an empty prompt")
+    if not api_key or not api_key.strip():
+        raise ValueError("Anthropic API key is missing or empty")
+
     client = anthropic.Anthropic(api_key=api_key)
     # Use prompt caching: mark the system prompt as cacheable so it's
     # reused across multiple file extractions in the same session.
-    resp = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        system=[
-            {
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except anthropic.BadRequestError as e:
+        # Re-raise with a more descriptive message, especially for empty-body 400s
+        detail = str(e) if str(e) else "Bad Request"
+        raise RuntimeError(
+            f"Anthropic API 400 Bad Request: {detail}. "
+            f"Model: {model}, prompt length: {len(prompt)} chars, "
+            f"max_tokens: {max_tokens}"
+        ) from e
     # Track token usage
     if hasattr(resp, "usage") and resp.usage:
         input_tok = getattr(resp.usage, "input_tokens", 0)
@@ -569,15 +583,28 @@ def _call_openai(
 ) -> str:
     import openai
 
+    if not prompt or not prompt.strip():
+        raise ValueError("Cannot call OpenAI API with an empty prompt")
+    if not api_key or not api_key.strip():
+        raise ValueError("OpenAI API key is missing or empty")
+
     client = openai.OpenAI(api_key=api_key)
-    resp = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-    )
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+        )
+    except openai.BadRequestError as e:
+        detail = str(e) if str(e) else "Bad Request"
+        raise RuntimeError(
+            f"OpenAI API 400 Bad Request: {detail}. "
+            f"Model: {model}, prompt length: {len(prompt)} chars, "
+            f"max_tokens: {max_tokens}"
+        ) from e
     # Track token usage
     if hasattr(resp, "usage") and resp.usage:
         input_tok = getattr(resp.usage, "prompt_tokens", 0)

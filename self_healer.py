@@ -116,6 +116,8 @@ def _fingerprint(operation: str, error_type: str, error_msg: str) -> str:
         bucket = "token_limit"
     elif "overloaded" in msg_lower or "529" in msg_lower or "503" in msg_lower:
         bucket = "server_overloaded"
+    elif "400" in msg_lower or "bad request" in msg_lower or "invalid_request" in msg_lower:
+        bucket = "bad_request"
     elif error_type == "TypeError":
         bucket = "type_error"
     else:
@@ -155,6 +157,7 @@ _DEFAULT_STRATEGIES: dict[str, list[str]] = {
     "pdf":              ["fallback_pdf_to_markdown"],
     "token_limit":      ["reduce_input_size", "chunk_input"],
     "server_overloaded": ["retry_with_backoff", "switch_model"],
+    "bad_request":      ["reduce_input_size", "switch_model"],
     "type_error":       ["coerce_types", "skip_and_continue"],
     "unknown":          ["retry_with_backoff", "skip_and_continue"],
 }
@@ -181,6 +184,8 @@ def _bucket_from_fingerprint(operation: str, error_type: str, error_msg: str) ->
         return "token_limit"
     if "overloaded" in msg_lower or "529" in msg_lower or "503" in msg_lower:
         return "server_overloaded"
+    if "400" in msg_lower or "bad request" in msg_lower or "invalid_request" in msg_lower:
+        return "bad_request"
     if error_type == "TypeError":
         return "type_error"
     return "unknown"

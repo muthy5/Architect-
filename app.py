@@ -824,6 +824,13 @@ with tab_extract:
                             st.error(f"`{uf.name}`: The AI service is temporarily overloaded after {max_file_retries+1} attempts.")
                         elif "timeout" in err_msg.lower():
                             st.error(f"`{uf.name}`: Request timed out. The document may be too large.")
+                        elif "400" in err_msg or "bad request" in err_msg.lower():
+                            st.error(
+                                f"`{uf.name}`: Bad request (HTTP 400). This usually means the document "
+                                f"is too large, the prompt exceeds the model's context window, or the "
+                                f"API key doesn't have access to the selected model. "
+                                f"Try a smaller file or switch to a different model/tier."
+                            )
                         else:
                             st.error(f"Error processing `{uf.name}` after {max_file_retries+1} attempts. Check the Self-Healing Dashboard.")
 
