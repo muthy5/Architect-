@@ -426,6 +426,61 @@ def get_tier_model(provider: str, tier: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Large-file splitting — chop documents that exceed the context window
+# ---------------------------------------------------------------------------
+
+# Approximate safe input size in characters.  Models accept ~200 K tokens but
+# the system prompt, extraction template, and output budget eat into that.
+# 80 000 chars ≈ 20 000 tokens leaves plenty of headroom.
+DEFAULT_CHUNK_CHARS = 80_000
+# Overlap between consecutive chunks so specs that straddle a boundary aren't lost.
+DEFAULT_OVERLAP_CHARS = 2_000
+
+
+def split_text(
+    text: str,
+    *,
+    max_chars: int = DEFAULT_CHUNK_CHARS,
+    overlap: int = DEFAULT_OVERLAP_CHARS,
+) -> list[str]:
+    """Split *text* into chunks of at most *max_chars* with *overlap* chars of
+    context carried over between consecutive chunks.
+
+    Tries to break on paragraph boundaries (double-newline) so that individual
+    specs are less likely to be cut in half.  Falls back to a hard character
+    split when no paragraph break is found in the target window.
+
+    Returns a list with one or more chunks.  If the text already fits, the
+    returned list contains a single element equal to the original text.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = start + max_chars
+
+        if end >= len(text):
+            # Last chunk — take everything remaining.
+            chunks.append(text[start:])
+            break
+
+        # Try to find a paragraph boundary (\n\n) near the end of the window
+        # so we split cleanly between sections.
+        search_start = max(start, end - 4000)  # look in last ~4 000 chars
+        boundary = text.rfind("\n\n", search_start, end)
+        if boundary > start:
+            end = boundary + 1  # include the first newline
+
+        chunks.append(text[start:end])
+        # Advance, leaving *overlap* chars of repeated context.
+        start = max(start + 1, end - overlap)
+
+    return chunks
+
+
 def estimate_max_tokens(input_text_len: int) -> int:
     """Scale max output tokens based on input size.
 
@@ -770,27 +825,68 @@ class OperationalBrain:
     ) -> list[TechnicalAtom]:
         """Extract TechnicalAtoms from a document's text.
 
+        Large files are automatically split into chunks that fit the LLM
+        context window.  Each chunk is extracted independently and the
+        resulting atoms are merged.
+
         Uses file-content caching to skip API calls for previously-extracted
         documents, and dynamic max_tokens to reduce cost on smaller files.
         When *diag* is provided, populates it with step-by-step diagnostic info.
         """
-        effective_model = self.model or get_tier_model(self.provider, self.tier)
-
         if diag is not None:
             diag.text_length = len(text)
+
+        chunks = split_text(text)
+        if len(chunks) > 1:
+            log.info(
+                "File %s is large (%d chars) — split into %d chunks",
+                filename, len(text), len(chunks),
+            )
+            if diag is not None:
+                diag.warnings.append(
+                    f"File split into {len(chunks)} chunks "
+                    f"({len(text):,} chars total)"
+                )
+
+        all_atoms: list[TechnicalAtom] = []
+        for chunk_idx, chunk in enumerate(chunks):
+            chunk_label = (
+                f"{filename} [chunk {chunk_idx + 1}/{len(chunks)}]"
+                if len(chunks) > 1
+                else filename
+            )
+            atoms = self._extract_chunk(chunk, filename, chunk_label, diag)
+            all_atoms.extend(atoms)
+
+        all_atoms = self._normalise(all_atoms)
+        if diag is not None:
+            diag.atoms_after_normalise = len(all_atoms)
+        return all_atoms
+
+    # ------------------------------------------------------------------
+    # Single-chunk extraction (called once per chunk)
+    # ------------------------------------------------------------------
+
+    def _extract_chunk(
+        self,
+        text: str,
+        filename: str,
+        chunk_label: str,
+        diag: FileExtractionDiag | None = None,
+    ) -> list[TechnicalAtom]:
+        """Extract atoms from a single (already-sized) text chunk."""
+        effective_model = self.model or get_tier_model(self.provider, self.tier)
 
         # Check cache — skip API call if we've already extracted this exact content
         cached = get_cached_extraction(text, filename, self.provider, effective_model)
         if cached is not None:
-            log.info("Cache hit for %s — skipping API call", filename)
+            log.info("Cache hit for %s — skipping API call", chunk_label)
             usage_stats.record_cache_hit()
             if diag is not None:
-                diag.warnings.append("Using cached LLM response (no new API call)")
-            atoms = self._parse_atoms(cached, filename, diag)
-            atoms = self._normalise(atoms)
-            if diag is not None:
-                diag.atoms_after_normalise = len(atoms)
-            return atoms
+                diag.warnings.append(
+                    f"Using cached LLM response for {chunk_label}"
+                )
+            return self._parse_atoms(cached, filename, diag)
 
         prompt = EXTRACTION_PROMPT_TEMPLATE.format(filename=filename, text=text)
         max_tok = estimate_max_tokens(len(text))
@@ -813,11 +909,7 @@ class OperationalBrain:
         # Cache the raw response for future re-uploads
         set_cached_extraction(text, filename, self.provider, effective_model, raw)
 
-        atoms = self._parse_atoms(raw, filename, diag)
-        atoms = self._normalise(atoms)
-        if diag is not None:
-            diag.atoms_after_normalise = len(atoms)
-        return atoms
+        return self._parse_atoms(raw, filename, diag)
 
     def organize_by_taxonomy(
         self, atoms: list[TechnicalAtom]
