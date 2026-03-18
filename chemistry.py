@@ -70,6 +70,86 @@ ZONE_DESCRIPTIONS: dict[KitZone, str] = {
 }
 
 
+# Physical appearance descriptions for each zone
+ZONE_PHYSICAL: dict[KitZone, str] = {
+    KitZone.ZONE_A_SETUP: (
+        "A clean, dry bench with glassware laid out left-to-right in order of "
+        "use. PPE (goggles, gloves, lab coat) placed at the front edge."
+    ),
+    KitZone.ZONE_B_REAGENTS: (
+        "Labelled bottles and vials arranged on a tray, sorted by order of "
+        "addition. A cold-pack or ice bath nearby for temperature-sensitive items."
+    ),
+    KitZone.ZONE_C_REACTION: (
+        "Central workspace with fume hood open, heating mantle or hot plate "
+        "centred, and a stir bar ready. Thermometer and timer within arm's reach."
+    ),
+    KitZone.ZONE_D_WASTE: (
+        "Clearly labelled waste containers (organic, aqueous, sharps) lined up "
+        "at the far end of the bench, away from the reaction area."
+    ),
+}
+
+# Inline SVG cartoon icons for each zone (64×64)
+ZONE_ICONS: dict[KitZone, str] = {
+    KitZone.ZONE_A_SETUP: (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">'
+        '<rect x="8" y="44" width="48" height="6" rx="2" fill="#1e3a5f"/>'
+        '<rect x="14" y="18" width="6" height="26" rx="1" fill="#3b82f6" opacity="0.8"/>'
+        '<rect x="24" y="24" width="6" height="20" rx="1" fill="#60a5fa" opacity="0.7"/>'
+        '<rect x="34" y="12" width="6" height="32" rx="1" fill="#3b82f6" opacity="0.9"/>'
+        '<circle cx="17" cy="14" r="3" fill="#93c5fd"/>'
+        '<path d="M44 20 l8 0 l-4 24 Z" fill="#60a5fa" opacity="0.6"/>'
+        '<rect x="10" y="8" width="12" height="4" rx="1" fill="#2563eb" opacity="0.5"/>'
+        '<text x="32" y="60" text-anchor="middle" font-size="6" fill="#64748b">SETUP</text>'
+        '</svg>'
+    ),
+    KitZone.ZONE_B_REAGENTS: (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">'
+        '<rect x="8" y="44" width="48" height="6" rx="2" fill="#2d1f5e"/>'
+        '<rect x="12" y="22" width="10" height="22" rx="3" fill="#8b5cf6" opacity="0.7"/>'
+        '<rect x="14" y="20" width="6" height="4" rx="1" fill="#a78bfa"/>'
+        '<rect x="27" y="26" width="10" height="18" rx="3" fill="#7c3aed" opacity="0.6"/>'
+        '<rect x="29" y="24" width="6" height="4" rx="1" fill="#a78bfa"/>'
+        '<rect x="42" y="18" width="10" height="26" rx="3" fill="#8b5cf6" opacity="0.8"/>'
+        '<rect x="44" y="16" width="6" height="4" rx="1" fill="#a78bfa"/>'
+        '<rect x="14" y="30" width="6" height="1" fill="#c4b5fd" opacity="0.5"/>'
+        '<rect x="29" y="32" width="6" height="1" fill="#c4b5fd" opacity="0.5"/>'
+        '<text x="32" y="60" text-anchor="middle" font-size="6" fill="#64748b">REAGENTS</text>'
+        '</svg>'
+    ),
+    KitZone.ZONE_C_REACTION: (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">'
+        '<rect x="8" y="44" width="48" height="6" rx="2" fill="#3d2f0a"/>'
+        '<path d="M24 16 L20 40 L44 40 L40 16 Z" fill="#f59e0b" opacity="0.3" stroke="#f59e0b" stroke-width="1"/>'
+        '<ellipse cx="32" cy="40" rx="12" ry="3" fill="#f59e0b" opacity="0.5"/>'
+        '<circle cx="28" cy="34" r="2" fill="#fbbf24" opacity="0.6"/>'
+        '<circle cx="34" cy="30" r="1.5" fill="#fbbf24" opacity="0.5"/>'
+        '<circle cx="30" cy="26" r="1" fill="#fcd34d" opacity="0.4"/>'
+        '<path d="M26 14 L26 16 M38 14 L38 16" stroke="#f59e0b" stroke-width="2"/>'
+        '<line x1="50" y1="16" x2="50" y2="40" stroke="#ef4444" stroke-width="1.5" opacity="0.6"/>'
+        '<circle cx="50" cy="14" r="2" fill="#ef4444" opacity="0.6"/>'
+        '<text x="32" y="60" text-anchor="middle" font-size="6" fill="#64748b">REACTION</text>'
+        '</svg>'
+    ),
+    KitZone.ZONE_D_WASTE: (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">'
+        '<rect x="8" y="44" width="48" height="6" rx="2" fill="#1f2937"/>'
+        '<rect x="12" y="20" width="14" height="24" rx="2" fill="#4b5563" opacity="0.7"/>'
+        '<rect x="14" y="18" width="10" height="4" rx="1" fill="#6b7280"/>'
+        '<path d="M15 28 L17 26 L19 28 L21 26 L23 28" stroke="#9ca3af" stroke-width="1" fill="none"/>'
+        '<rect x="32" y="24" width="14" height="20" rx="2" fill="#374151" opacity="0.7"/>'
+        '<rect x="34" y="22" width="10" height="4" rx="1" fill="#6b7280"/>'
+        '<line x1="36" y1="30" x2="44" y2="30" stroke="#9ca3af" stroke-width="0.5"/>'
+        '<line x1="36" y1="34" x2="44" y2="34" stroke="#9ca3af" stroke-width="0.5"/>'
+        '<path d="M50 20 L54 20 L54 42 L50 42 Z" fill="#ef4444" opacity="0.3"/>'
+        '<text x="52" y="34" text-anchor="middle" font-size="7" fill="#ef4444" font-weight="bold">!</text>'
+        '<text x="32" y="60" text-anchor="middle" font-size="6" fill="#64748b">WASTE</text>'
+        '</svg>'
+    ),
+}
+
+
 def zone_for_category(category_value: str) -> KitZone:
     """Map a taxonomy category to its kit zone."""
     return _CATEGORY_ZONE_MAP.get(category_value, KitZone.ZONE_C_REACTION)

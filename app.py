@@ -51,6 +51,8 @@ from chemistry import (
     SensoryType,
     ChemistryInstructionSet,
     ZONE_DESCRIPTIONS,
+    ZONE_PHYSICAL,
+    ZONE_ICONS,
     build_chemistry_instructions,
     is_chemistry_taxonomy,
 )
@@ -181,15 +183,21 @@ st.markdown(
     .atom-row {
         display: flex;
         gap: 0.5rem;
-        align-items: flex-start;
-        padding: 0.35rem 0;
-        border-bottom: 1px solid #1a1e2a;
+        align-items: center;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid rgba(30, 35, 48, 0.7);
         font-size: 0.82rem;
     }
     .atom-row:last-child { border-bottom: none; }
-    .atom-param { color: #7dd3fc; min-width: 220px; font-weight: 600; }
-    .atom-value { color: #ffffff; flex: 1; }
-    .atom-src   { color: #4a5568; font-size: 0.72rem; white-space: nowrap; }
+    .atom-row:hover { background: rgba(59, 130, 246, 0.04); border-radius: 4px; }
+    .atom-param {
+        color: #e2e8f0; flex: 0 0 40%; font-weight: 600;
+        padding-left: 0.25rem;
+    }
+    .atom-value { color: #94a3b8; flex: 1; }
+    .atom-tag   { flex: 0 0 70px; text-align: center; }
+    .atom-src   { color: #4a5568; font-size: 0.68rem; white-space: nowrap;
+                  flex: 0 0 100px; text-align: right; }
     .badge-prereq {
         background: #312e81; color: #a5b4fc;
         border-radius: 4px; padding: 1px 6px;
@@ -262,20 +270,36 @@ st.markdown(
     .chem-zone-card {
         background: #141720;
         border: 1px solid #1e2330;
-        border-radius: 8px;
-        padding: 1rem 1.25rem;
-        margin-bottom: 1rem;
+        border-radius: 12px;
+        padding: 0;
+        margin-bottom: 1.25rem;
+        overflow: hidden;
     }
     .chem-zone-a { border-left: 4px solid #3b82f6; }
     .chem-zone-b { border-left: 4px solid #8b5cf6; }
     .chem-zone-c { border-left: 4px solid #f59e0b; }
     .chem-zone-d { border-left: 4px solid #6b7280; }
+
+    /* Zone header with icon */
+    .chem-zone-header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 1rem 1.25rem 0.75rem;
+        background: linear-gradient(135deg, #141720 0%, #1a1e2e 100%);
+    }
+    .chem-zone-icon {
+        flex-shrink: 0;
+        width: 64px;
+        height: 64px;
+    }
+    .chem-zone-header-text { flex: 1; }
     .chem-zone-label {
-        font-size: 0.72rem;
+        font-size: 0.75rem;
         letter-spacing: 0.12em;
         text-transform: uppercase;
         font-weight: 700;
-        margin-bottom: 0.3rem;
+        margin-bottom: 0.2rem;
     }
     .chem-zone-a .chem-zone-label { color: #3b82f6; }
     .chem-zone-b .chem-zone-label { color: #8b5cf6; }
@@ -284,9 +308,39 @@ st.markdown(
     .chem-zone-desc {
         color: #9ca3af;
         font-size: 0.78rem;
-        margin-bottom: 0.5rem;
+        margin-bottom: 0;
         font-style: italic;
+        line-height: 1.4;
     }
+    .chem-zone-physical {
+        color: #cbd5e1;
+        font-size: 0.78rem;
+        margin-top: 0.25rem;
+        line-height: 1.4;
+    }
+
+    /* Zone items table */
+    .chem-zone-items {
+        padding: 0 1.25rem 1rem;
+    }
+    .chem-zone-items-header {
+        display: flex;
+        gap: 0.5rem;
+        padding: 0.5rem 0;
+        border-bottom: 2px solid #1e2740;
+        margin-bottom: 0.25rem;
+    }
+    .chem-zone-items-header span {
+        font-size: 0.65rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #4a5568;
+        font-weight: 600;
+    }
+    .chem-col-item { flex: 0 0 40%; }
+    .chem-col-spec { flex: 1; }
+    .chem-col-tag  { flex: 0 0 70px; text-align: center; }
+    .chem-col-src  { flex: 0 0 100px; text-align: right; }
 
     /* ── Action-Result Table ─────────── */
     .ar-table {
@@ -635,7 +689,8 @@ def _atom_html(atom: TechnicalAtom) -> str:
     return (
         f'<div class="atom-row">'
         f'  <span class="atom-param">{param}</span>'
-        f'  <span class="atom-value">{value} {badges}</span>'
+        f'  <span class="atom-value">{value}</span>'
+        f'  <span class="atom-tag">{badges if badges else ""}</span>'
         f'  <span class="atom-src">{src}</span>'
         f'</div>'
     )
@@ -1374,31 +1429,56 @@ with tab_chem:
                 zone_atoms = chem_inst.zones.get(zone, [])
                 css_cls = _zone_css.get(zone, "")
                 desc = ZONE_DESCRIPTIONS.get(zone, "")
+                physical = ZONE_PHYSICAL.get(zone, "")
+                icon_svg = ZONE_ICONS.get(zone, "")
 
+                # --- Header: icon + label + descriptions ---
                 zone_html = f"<div class='chem-zone-card {css_cls}'>"
+                zone_html += "<div class='chem-zone-header'>"
+                if icon_svg:
+                    zone_html += f"<div class='chem-zone-icon'>{icon_svg}</div>"
+                zone_html += "<div class='chem-zone-header-text'>"
                 zone_html += f"<div class='chem-zone-label'>{html.escape(zone.value)}</div>"
                 zone_html += f"<div class='chem-zone-desc'>{html.escape(desc)}</div>"
+                if physical:
+                    zone_html += (
+                        f"<div class='chem-zone-physical'>"
+                        f"\U0001f50d {html.escape(physical)}</div>"
+                    )
+                zone_html += "</div></div>"  # close header-text + header
 
+                # --- Items table ---
+                zone_html += "<div class='chem-zone-items'>"
                 if zone_atoms:
+                    zone_html += (
+                        "<div class='chem-zone-items-header'>"
+                        "<span class='chem-col-item'>Item</span>"
+                        "<span class='chem-col-spec'>Specification</span>"
+                        "<span class='chem-col-tag'>Status</span>"
+                        "<span class='chem-col-src'>Source</span>"
+                        "</div>"
+                    )
                     for atom in zone_atoms:
                         prereq_badge = (
-                            " <span class='badge-prereq'>PREREQ</span>"
-                            if atom.is_prerequisite else ""
+                            "<span class='badge-prereq'>PREREQ</span>"
+                            if atom.is_prerequisite else
+                            "<span style='color:#4a5568; font-size:0.68rem;'>\u2014</span>"
                         )
                         zone_html += (
                             f"<div class='atom-row'>"
                             f"<span class='atom-param'>{html.escape(atom.parameter)}</span>"
-                            f"<span class='atom-value'>{html.escape(atom.value)}{prereq_badge}</span>"
+                            f"<span class='atom-value'>{html.escape(atom.value)}</span>"
+                            f"<span class='atom-tag'>{prereq_badge}</span>"
                             f"<span class='atom-src'>{html.escape(atom.source_file)}</span>"
                             f"</div>"
                         )
                 else:
                     zone_html += (
-                        "<div style='color:#6b7280; font-size:0.78rem; "
-                        "font-style:italic;'>No items extracted for this zone.</div>"
+                        "<div style='color:#4a5568; font-size:0.78rem; "
+                        "font-style:italic; padding: 0.75rem 0;'>"
+                        "No items extracted for this zone.</div>"
                     )
-
-                zone_html += "</div>"
+                zone_html += "</div></div>"  # close items + card
                 st.markdown(zone_html, unsafe_allow_html=True)
 
             st.markdown("---")
