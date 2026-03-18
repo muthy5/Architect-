@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -302,6 +303,96 @@ class TechnicalAtom(BaseModel):
     def conflict_key(self) -> str:
         """Key used for conflict detection: (canonical_category, parameter_lower)."""
         return f"{self.canonical_category().value}||{self.parameter.strip().lower()}"
+
+
+# ---------------------------------------------------------------------------
+# Extraction diagnostics — surfaced to the UI so failures aren't silent
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FileExtractionDiag:
+    """Diagnostic info for a single file's extraction attempt."""
+
+    filename: str
+    file_read_ok: bool = True
+    file_read_error: str = ""
+    text_length: int = 0
+    llm_call_ok: bool = True
+    llm_call_error: str = ""
+    llm_raw_response_length: int = 0
+    json_parse_ok: bool = True
+    json_parse_error: str = ""
+    json_cleanup_level: int = -1  # -1 = not attempted, 0-3 = cleanup level used
+    items_in_json: int = 0
+    atoms_constructed: int = 0
+    atoms_skipped: int = 0
+    skipped_reasons: list[str] = field(default_factory=list)
+    atoms_after_normalise: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+    def has_problems(self) -> bool:
+        return (
+            not self.file_read_ok
+            or not self.llm_call_ok
+            or not self.json_parse_ok
+            or self.atoms_skipped > 0
+            or (self.items_in_json > 0 and self.atoms_constructed == 0)
+            or (self.text_length > 0 and self.atoms_after_normalise == 0)
+        )
+
+    def summary_lines(self) -> list[str]:
+        """Return human-readable diagnostic lines."""
+        lines: list[str] = []
+        if not self.file_read_ok:
+            lines.append(f"File read failed: {self.file_read_error}")
+            return lines
+        lines.append(f"Text extracted: {self.text_length:,} chars")
+        if not self.llm_call_ok:
+            lines.append(f"LLM call failed: {self.llm_call_error}")
+            return lines
+        lines.append(f"LLM response: {self.llm_raw_response_length:,} chars")
+        if not self.json_parse_ok:
+            lines.append(f"JSON parsing failed: {self.json_parse_error}")
+            return lines
+        if self.json_cleanup_level > 0:
+            lines.append(
+                f"JSON required cleanup level {self.json_cleanup_level} to parse"
+            )
+        lines.append(f"JSON items found: {self.items_in_json}")
+        lines.append(f"Atoms constructed: {self.atoms_constructed}")
+        if self.atoms_skipped > 0:
+            lines.append(
+                f"Atoms skipped (malformed): {self.atoms_skipped}"
+            )
+            for reason in self.skipped_reasons[:5]:
+                lines.append(f"  - {reason}")
+        lines.append(f"Atoms after normalisation: {self.atoms_after_normalise}")
+        for w in self.warnings:
+            lines.append(f"Warning: {w}")
+        return lines
+
+
+@dataclass
+class ExtractionDiagnostics:
+    """Collects diagnostics across all files in an extraction run."""
+
+    file_diags: list[FileExtractionDiag] = field(default_factory=list)
+
+    def add(self, diag: FileExtractionDiag) -> None:
+        self.file_diags.append(diag)
+
+    def total_atoms(self) -> int:
+        return sum(d.atoms_after_normalise for d in self.file_diags)
+
+    def total_skipped(self) -> int:
+        return sum(d.atoms_skipped for d in self.file_diags)
+
+    def files_with_problems(self) -> list[FileExtractionDiag]:
+        return [d for d in self.file_diags if d.has_problems()]
+
+    def has_any_problems(self) -> bool:
+        return any(d.has_problems() for d in self.file_diags)
 
 
 # ---------------------------------------------------------------------------
@@ -629,39 +720,61 @@ class OperationalBrain:
         self.api_key = api_key
         self.tier = tier
 
-    def extract_atoms(self, text: str, filename: str) -> list[TechnicalAtom]:
+    def extract_atoms(
+        self,
+        text: str,
+        filename: str,
+        diag: FileExtractionDiag | None = None,
+    ) -> list[TechnicalAtom]:
         """Extract TechnicalAtoms from a document's text.
 
         Uses file-content caching to skip API calls for previously-extracted
         documents, and dynamic max_tokens to reduce cost on smaller files.
+        When *diag* is provided, populates it with step-by-step diagnostic info.
         """
         effective_model = self.model or get_tier_model(self.provider, self.tier)
+
+        if diag is not None:
+            diag.text_length = len(text)
 
         # Check cache — skip API call if we've already extracted this exact content
         cached = get_cached_extraction(text, filename, self.provider, effective_model)
         if cached is not None:
             log.info("Cache hit for %s — skipping API call", filename)
             usage_stats.record_cache_hit()
-            atoms = self._parse_atoms(cached, filename)
-            return self._normalise(atoms)
+            if diag is not None:
+                diag.warnings.append("Using cached LLM response (no new API call)")
+            atoms = self._parse_atoms(cached, filename, diag)
+            atoms = self._normalise(atoms)
+            if diag is not None:
+                diag.atoms_after_normalise = len(atoms)
+            return atoms
 
         prompt = EXTRACTION_PROMPT_TEMPLATE.format(filename=filename, text=text)
         max_tok = estimate_max_tokens(len(text))
-        raw = call_llm(
-            prompt,
-            SYSTEM_PROMPT,
-            provider=self.provider,
-            model=self.model,
-            api_key=self.api_key,
-            max_tokens=max_tok,
-            tier=self.tier,
-        )
+        try:
+            raw = call_llm(
+                prompt,
+                SYSTEM_PROMPT,
+                provider=self.provider,
+                model=self.model,
+                api_key=self.api_key,
+                max_tokens=max_tok,
+                tier=self.tier,
+            )
+        except Exception as e:
+            if diag is not None:
+                diag.llm_call_ok = False
+                diag.llm_call_error = f"{type(e).__name__}: {e}"
+            raise
 
         # Cache the raw response for future re-uploads
         set_cached_extraction(text, filename, self.provider, effective_model, raw)
 
-        atoms = self._parse_atoms(raw, filename)
+        atoms = self._parse_atoms(raw, filename, diag)
         atoms = self._normalise(atoms)
+        if diag is not None:
+            diag.atoms_after_normalise = len(atoms)
         return atoms
 
     def organize_by_taxonomy(
@@ -698,14 +811,22 @@ class OperationalBrain:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_atoms(raw: str, source_file: str) -> list[TechnicalAtom]:
+    def _parse_atoms(
+        raw: str,
+        source_file: str,
+        diag: FileExtractionDiag | None = None,
+    ) -> list[TechnicalAtom]:
         """Parse the LLM JSON response into TechnicalAtom instances.
 
         Self-healing: applies progressively aggressive cleanup strategies
         when JSON parsing fails, and records outcomes for future learning.
         Logs warnings for skipped items so the user can see why data was dropped.
+        When *diag* is provided, populates it with detailed diagnostic info.
         """
         healer = get_healer()
+
+        if diag is not None:
+            diag.llm_raw_response_length = len(raw)
 
         # --- Layered cleanup strategies ---
         def _clean_level_0(text: str) -> str:
@@ -751,12 +872,19 @@ class OperationalBrain:
                 if level > 0:
                     used_strategy = f"json_cleanup_level_{level}"
                     log.info("JSON parsed at cleanup level %d for %s", level, source_file)
+                if diag is not None:
+                    diag.json_cleanup_level = level
                 break
             except (json.JSONDecodeError, Exception) as e:
                 last_error = e
                 continue
 
         if data is None:
+            err_msg = (
+                f"All 4 JSON cleanup strategies failed "
+                f"(response length: {len(raw)} chars, "
+                f"last error: {last_error})"
+            )
             log.warning("All JSON cleanup strategies failed for %s (response length: %d chars)",
                         source_file, len(raw))
             healer.record_failure(
@@ -764,6 +892,12 @@ class OperationalBrain:
                 last_error or ValueError("All JSON cleanup strategies failed"),
                 context={"source_file": source_file, "raw_length": len(raw)},
             )
+            if diag is not None:
+                diag.json_parse_ok = False
+                diag.json_parse_error = err_msg
+                # Include a snippet of the raw response to help debug
+                snippet = raw[:300].replace("\n", " ")
+                diag.warnings.append(f"LLM raw response preview: {snippet!r}")
             return []
 
         # Record success (with strategy if recovery was needed)
@@ -776,14 +910,27 @@ class OperationalBrain:
             healer.learn_strategy("json_parse", last_error, used_strategy, succeeded=True)
 
         if not isinstance(data, list):
-            log.warning("LLM returned non-array JSON for %s", source_file)
+            log.warning("LLM returned non-array JSON for %s (got %s)", source_file, type(data).__name__)
+            if diag is not None:
+                diag.json_parse_ok = False
+                diag.json_parse_error = (
+                    f"LLM returned {type(data).__name__} instead of a JSON array"
+                )
             return []
+
+        if diag is not None:
+            diag.json_parse_ok = True
+            diag.items_in_json = len(data)
 
         atoms: list[TechnicalAtom] = []
         skipped = 0
         for item in data:
             if not isinstance(item, dict):
                 skipped += 1
+                if diag is not None:
+                    diag.skipped_reasons.append(
+                        f"Non-dict item ({type(item).__name__}): {str(item)[:80]}"
+                    )
                 continue
             item.setdefault("source_file", source_file)
             try:
@@ -812,9 +959,17 @@ class OperationalBrain:
                             "atom_construction", exc, "coerce_types", succeeded=False,
                         )
                 skipped += 1
+                if diag is not None:
+                    diag.skipped_reasons.append(
+                        f"{type(exc).__name__}: {exc} — keys: {list(item.keys())}"
+                    )
                 log.debug("Skipped malformed atom in %s: %s — %s", source_file, exc, item)
         if skipped:
             log.warning("Skipped %d malformed item(s) from %s", skipped, source_file)
+
+        if diag is not None:
+            diag.atoms_constructed = len(atoms)
+            diag.atoms_skipped = skipped
         return atoms
 
     @staticmethod
