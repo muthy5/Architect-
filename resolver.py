@@ -8,9 +8,17 @@ the same spec by the same name but with different values will always be caught.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
+
+# Ensure the app directory is on sys.path so sibling modules are importable
+# even when this module is loaded transitively on Streamlit Cloud.
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+if _this_dir not in sys.path:
+    sys.path.insert(0, _this_dir)
 
 from engine import TechnicalAtom, normalise_category
 
