@@ -14,6 +14,9 @@ from engine import (
     UsageStats,
     _extraction_cache,
     clear_extraction_cache,
+    content_hash,
+    deduplicate_atoms,
+    detect_duplicate_documents,
     get_cached_extraction,
     set_cached_extraction,
 )
@@ -359,3 +362,147 @@ class TestUsageStatsReset:
         assert s["calls"] == 1
         assert s["input_tokens"] == 200
         assert s["output_tokens"] == 100
+
+
+# ---------------------------------------------------------------------------
+# Document deduplication tests
+# ---------------------------------------------------------------------------
+
+
+class TestContentHash:
+    def test_identical_content_same_hash(self):
+        assert content_hash("hello world") == content_hash("hello world")
+
+    def test_whitespace_normalised(self):
+        assert content_hash("hello   world") == content_hash("hello world")
+        assert content_hash("hello\n\nworld") == content_hash("hello world")
+        assert content_hash("  hello world  ") == content_hash("hello world")
+
+    def test_different_content_different_hash(self):
+        assert content_hash("hello") != content_hash("world")
+
+
+class TestDetectDuplicateDocuments:
+    def test_no_duplicates(self):
+        texts = {"a.txt": "content A", "b.txt": "content B"}
+        groups = detect_duplicate_documents(texts)
+        assert len(groups) == 0
+
+    def test_two_identical_files(self):
+        texts = {"a.txt": "same content", "b.txt": "same content"}
+        groups = detect_duplicate_documents(texts)
+        assert len(groups) == 1
+        assert set(groups[0].filenames) == {"a.txt", "b.txt"}
+        assert groups[0].keeper in ("a.txt", "b.txt")
+        assert len(groups[0].duplicates) == 1
+
+    def test_whitespace_differences_detected(self):
+        texts = {"a.txt": "hello  world", "b.txt": "hello world"}
+        groups = detect_duplicate_documents(texts)
+        assert len(groups) == 1
+
+    def test_three_identical_files(self):
+        texts = {"a.txt": "same", "b.txt": "same", "c.txt": "same"}
+        groups = detect_duplicate_documents(texts)
+        assert len(groups) == 1
+        assert len(groups[0].filenames) == 3
+        assert len(groups[0].duplicates) == 2
+
+    def test_two_separate_dup_groups(self):
+        texts = {
+            "a.txt": "content A",
+            "b.txt": "content A",
+            "c.txt": "content B",
+            "d.txt": "content B",
+        }
+        groups = detect_duplicate_documents(texts)
+        assert len(groups) == 2
+
+    def test_single_file_no_group(self):
+        texts = {"only.txt": "just one"}
+        groups = detect_duplicate_documents(texts)
+        assert len(groups) == 0
+
+
+# ---------------------------------------------------------------------------
+# Atom deduplication tests
+# ---------------------------------------------------------------------------
+
+
+def _make_atom(category="Materials", parameter="Steel grade", value="304L",
+               source="a.txt", confidence=1.0):
+    return TechnicalAtom(
+        category=category, parameter=parameter, value=value,
+        source_file=source, confidence=confidence,
+    )
+
+
+class TestDeduplicateAtoms:
+    def test_no_duplicates_unchanged(self):
+        atoms = [
+            _make_atom(parameter="Steel grade", value="304L"),
+            _make_atom(parameter="Bolt size", value="M10"),
+        ]
+        result = deduplicate_atoms(atoms)
+        assert len(result.kept) == 2
+        assert result.removed_count == 0
+        assert result.duplicate_groups == 0
+
+    def test_exact_duplicates_merged(self):
+        atoms = [
+            _make_atom(source="a.txt", confidence=0.9),
+            _make_atom(source="b.txt", confidence=1.0),
+        ]
+        result = deduplicate_atoms(atoms)
+        assert len(result.kept) == 1
+        assert result.removed_count == 1
+        assert result.duplicate_groups == 1
+        # Higher confidence wins
+        assert result.kept[0].confidence == 1.0
+
+    def test_different_values_not_merged(self):
+        atoms = [
+            _make_atom(value="304L", source="a.txt"),
+            _make_atom(value="316L", source="b.txt"),
+        ]
+        result = deduplicate_atoms(atoms)
+        assert len(result.kept) == 2
+        assert result.removed_count == 0
+
+    def test_case_insensitive_dedup(self):
+        atoms = [
+            _make_atom(value="304L", source="a.txt"),
+            _make_atom(value="304l", source="b.txt"),
+        ]
+        result = deduplicate_atoms(atoms)
+        assert len(result.kept) == 1
+        assert result.removed_count == 1
+
+    def test_merged_atom_has_source_note(self):
+        atoms = [
+            _make_atom(source="a.txt", confidence=1.0),
+            _make_atom(source="b.txt", confidence=0.8),
+        ]
+        result = deduplicate_atoms(atoms)
+        assert result.kept[0].source_file == "a.txt"
+        assert "b.txt" in (result.kept[0].notes or "")
+
+    def test_three_duplicates(self):
+        atoms = [
+            _make_atom(source="a.txt", confidence=0.7),
+            _make_atom(source="b.txt", confidence=0.9),
+            _make_atom(source="c.txt", confidence=0.8),
+        ]
+        result = deduplicate_atoms(atoms)
+        assert len(result.kept) == 1
+        assert result.removed_count == 2
+        assert result.kept[0].confidence == 0.9  # highest wins
+
+    def test_same_source_duplicates_merged(self):
+        atoms = [
+            _make_atom(source="a.txt"),
+            _make_atom(source="a.txt"),
+        ]
+        result = deduplicate_atoms(atoms)
+        assert len(result.kept) == 1
+        assert result.removed_count == 1

@@ -19,11 +19,14 @@ from engine import (
     COST_TIERS,
     DEFAULT_CHUNK_CHARS,
     TAXONOMY_SECTIONS,
+    DeduplicationResult,
     ExtractionDiagnostics,
     FileExtractionDiag,
     OperationalBrain,
     TechnicalAtom,
     clear_extraction_cache,
+    deduplicate_atoms,
+    detect_duplicate_documents,
     split_text,
     usage_stats,
 )
@@ -237,6 +240,7 @@ def _fresh_defaults() -> dict:
         "resolution_done": False,
         "file_texts": {},           # filename → extracted text
         "extraction_diagnostics": None,  # ExtractionDiagnostics
+        "dedup_result": None,       # DeduplicationResult
     }
 
 for k, v in _fresh_defaults().items():
@@ -879,6 +883,26 @@ with tab_extract:
                             f"Tokens: {stats['input_tokens']:,} in / {stats['output_tokens']:,} out"
                         )
 
+                # ── Document-level deduplication ──────────────
+                doc_dup_groups = detect_duplicate_documents(file_texts)
+                if doc_dup_groups:
+                    for grp in doc_dup_groups:
+                        st.warning(
+                            f"Duplicate documents detected: "
+                            f"`{'`, `'.join(grp.filenames)}` have identical content. "
+                            f"Keeping atoms from `{grp.keeper}`; duplicates will be merged."
+                        )
+
+                # ── Atom-level deduplication ──────────────
+                dedup = deduplicate_atoms(all_atoms)
+                all_atoms = dedup.kept
+                if dedup.removed_count > 0:
+                    st.info(
+                        f"Deduplication: merged {dedup.removed_count} duplicate atom(s) "
+                        f"across {dedup.duplicate_groups} spec group(s). "
+                        f"{len(all_atoms)} unique atoms remain."
+                    )
+
                 taxonomy = brain.organize_by_taxonomy(all_atoms)
                 resolution_state = detect_conflicts(all_atoms)
 
@@ -886,6 +910,7 @@ with tab_extract:
                 st.session_state["taxonomy"] = taxonomy
                 st.session_state["file_texts"] = file_texts
                 st.session_state["resolution_state"] = resolution_state
+                st.session_state["dedup_result"] = dedup
                 st.session_state["extraction_done"] = True
                 st.session_state["extraction_diagnostics"] = diagnostics
 
@@ -903,10 +928,13 @@ with tab_extract:
                 if st.session_state["resolution_state"]
                 else 0
             )
-            c1, c2, c3 = st.columns(3)
+            dedup_res: DeduplicationResult | None = st.session_state.get("dedup_result")
+            dupes_merged = dedup_res.removed_count if dedup_res else 0
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total Atoms Extracted", total)
             c2.metric("Files Processed", len(st.session_state["file_texts"]))
-            c3.metric("Conflicts Detected", conflicts, delta=None)
+            c3.metric("Duplicates Merged", dupes_merged)
+            c4.metric("Conflicts Detected", conflicts, delta=None)
 
             if conflicts > 0:
                 st.warning(

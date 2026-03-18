@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -492,6 +493,117 @@ def estimate_max_tokens(input_text_len: int) -> int:
     estimated_input_tokens = input_text_len // 4
     # Minimum 2048, cap at 16384
     return max(2048, min(16384, estimated_input_tokens * 2))
+
+
+# ---------------------------------------------------------------------------
+# Document & atom deduplication
+# ---------------------------------------------------------------------------
+
+
+def content_hash(text: str) -> str:
+    """Return a SHA-256 hex digest of normalised text content.
+
+    Normalisation collapses whitespace so that trivially-different copies
+    of the same document (trailing spaces, different line endings) hash
+    identically.
+    """
+    normalised = re.sub(r"\s+", " ", text.strip())
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class DuplicateGroup:
+    """A group of uploaded files whose content is identical."""
+    content_hash: str
+    filenames: list[str] = field(default_factory=list)
+
+    @property
+    def keeper(self) -> str:
+        """The first filename is kept; the rest are duplicates."""
+        return self.filenames[0]
+
+    @property
+    def duplicates(self) -> list[str]:
+        return self.filenames[1:]
+
+
+def detect_duplicate_documents(
+    file_texts: dict[str, str],
+) -> list[DuplicateGroup]:
+    """Detect uploaded documents with identical normalised content.
+
+    Returns a list of DuplicateGroup objects, each containing the
+    filenames that share the same content.  Groups with only one member
+    are omitted — only actual duplicates are returned.
+    """
+    hash_to_names: dict[str, list[str]] = defaultdict(list)
+    for filename, text in file_texts.items():
+        h = content_hash(text)
+        hash_to_names[h].append(filename)
+
+    groups: list[DuplicateGroup] = []
+    for h, names in hash_to_names.items():
+        if len(names) > 1:
+            groups.append(DuplicateGroup(content_hash=h, filenames=names))
+    return groups
+
+
+@dataclass
+class DeduplicationResult:
+    """Result of atom-level deduplication."""
+    kept: list[TechnicalAtom] = field(default_factory=list)
+    removed_count: int = 0
+    duplicate_groups: int = 0
+
+
+def deduplicate_atoms(atoms: list[TechnicalAtom]) -> DeduplicationResult:
+    """Remove duplicate atoms that have the same category, parameter, AND value.
+
+    When multiple atoms from different source files carry identical specs
+    (same category + parameter + value after normalisation), only the one
+    with the highest confidence is kept.  The others are silently merged
+    — their source files are noted in the surviving atom's ``notes`` field.
+
+    Atoms whose (category, parameter) match but whose *values differ* are
+    NOT touched here — those are genuine conflicts handled by the resolver.
+    """
+    # Bucket atoms by (canonical_category, parameter_lower, value_lower)
+    BucketKey = tuple[str, str, str]
+    buckets: dict[BucketKey, list[TechnicalAtom]] = defaultdict(list)
+
+    for atom in atoms:
+        key: BucketKey = (
+            atom.canonical_category().value,
+            atom.parameter.strip().lower(),
+            atom.value.strip().lower(),
+        )
+        buckets[key].append(atom)
+
+    result = DeduplicationResult()
+    for key, group in buckets.items():
+        if len(group) == 1:
+            result.kept.append(group[0])
+            continue
+
+        # Multiple atoms with identical spec — keep the highest-confidence one
+        result.duplicate_groups += 1
+        group.sort(key=lambda a: a.confidence, reverse=True)
+        winner = group[0]
+
+        # Annotate the winner with merged source info
+        other_sources = [
+            a.source_file for a in group[1:] if a.source_file != winner.source_file
+        ]
+        if other_sources:
+            merged_note = f"Also found in: {', '.join(dict.fromkeys(other_sources))}"
+            winner.notes = (
+                f"{winner.notes}; {merged_note}" if winner.notes else merged_note
+            )
+
+        result.kept.append(winner)
+        result.removed_count += len(group) - 1
+
+    return result
 
 
 # ---------------------------------------------------------------------------
