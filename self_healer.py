@@ -400,6 +400,7 @@ class SelfHealer:
         self,
         operation: str,
         func: Callable[..., Any],
+        /,
         *args: Any,
         context: dict[str, Any] | None = None,
         max_retries: int = MAX_RETRIES_DEFAULT,
