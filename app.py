@@ -97,6 +97,46 @@ st.markdown(
         color: #ffffff;
         border: 1px solid #2d3346;
     }
+    /* Streamlit BaseWeb selectbox overrides */
+    [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
+    [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] * {
+        background-color: #1a1e2a !important;
+        color: #ffffff !important;
+        border-color: #2d3346 !important;
+    }
+    [data-testid="stSidebar"] .stSelectbox svg {
+        fill: #ffffff !important;
+    }
+    /* Selectbox dropdown menu */
+    [data-baseweb="popover"] [data-baseweb="menu"],
+    [data-baseweb="popover"] [role="listbox"],
+    [data-baseweb="popover"] [role="option"] {
+        background-color: #1a1e2a !important;
+        color: #ffffff !important;
+    }
+    [data-baseweb="popover"] [role="option"]:hover {
+        background-color: #2d3346 !important;
+    }
+    /* File uploader */
+    [data-testid="stSidebar"] [data-testid="stFileUploader"],
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] *,
+    [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
+    [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {
+        background-color: #1a1e2a !important;
+        color: #ffffff !important;
+        border-color: #2d3346 !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] small {
+        color: #9ca3af !important;
+    }
+    /* Text input in sidebar */
+    [data-testid="stSidebar"] .stTextInput [data-baseweb="input"],
+    [data-testid="stSidebar"] .stTextInput [data-baseweb="input"] input {
+        background-color: #1a1e2a !important;
+        color: #ffffff !important;
+        border-color: #2d3346 !important;
+        -webkit-text-fill-color: #ffffff !important;
+    }
 
     /* ── Cards ───────────────────────── */
     .mpr-card {
