@@ -7,14 +7,19 @@ from __future__ import annotations
 
 import html
 import io
+import logging
 import textwrap
 from datetime import datetime, timezone
+
+log = logging.getLogger(__name__)
 
 import streamlit as st
 
 from engine import (
     COST_TIERS,
     TAXONOMY_SECTIONS,
+    ExtractionDiagnostics,
+    FileExtractionDiag,
     OperationalBrain,
     TechnicalAtom,
     usage_stats,
@@ -228,6 +233,7 @@ def _fresh_defaults() -> dict:
         "extraction_done": False,
         "resolution_done": False,
         "file_texts": {},           # filename → extracted text
+        "extraction_diagnostics": None,  # ExtractionDiagnostics
     }
 
 for k, v in _fresh_defaults().items():
@@ -392,8 +398,17 @@ def read_file(uploaded) -> str:
                     )
                     healer.learn_strategy("file_read", e, "try_alternate_encoding", succeeded=True)
                     return text
-            except Exception:
-                pass
+            except Exception as fallback_err:
+                log.warning(
+                    "PDF fallback read also failed for %s: %s",
+                    uploaded.name,
+                    fallback_err,
+                )
+                healer.record_failure(
+                    "file_read",
+                    fallback_err,
+                    context={"filename": uploaded.name, "type": "pdf_fallback"},
+                )
             return f"[PDF read error: {e}]"
     else:
         raw = uploaded.read()
@@ -675,8 +690,10 @@ with tab_extract:
             else:
                 st.session_state["extraction_done"] = False
                 st.session_state["resolution_done"] = False
+                st.session_state["extraction_diagnostics"] = None
                 all_atoms: list[TechnicalAtom] = []
                 file_texts: dict[str, str] = {}
+                diagnostics = ExtractionDiagnostics()
 
                 brain = OperationalBrain(
                     provider=provider,
@@ -701,6 +718,7 @@ with tab_extract:
                         unsafe_allow_html=True,
                     )
 
+                    file_diag = FileExtractionDiag(filename=uf.name)
                     max_file_retries = 2
                     succeeded = False
                     last_extraction_error = None
@@ -710,14 +728,22 @@ with tab_extract:
                             uf.seek(0)  # Reset file pointer for retries
                             text = read_file(uf)
                             if text.startswith("[PDF read error"):
+                                file_diag.file_read_ok = False
+                                file_diag.file_read_error = text
                                 st.warning(f"Could not read `{uf.name}`. It may be a scanned/image-only PDF.")
                                 failed_files.append(uf.name)
                                 break
                             if len(text.strip()) < 20:
+                                file_diag.file_read_ok = True
+                                file_diag.text_length = len(text)
+                                file_diag.warnings.append(
+                                    f"File too short ({len(text.strip())} chars after stripping whitespace)"
+                                )
                                 st.warning(f"`{uf.name}` appears to be empty or too short to extract from.")
                                 failed_files.append(uf.name)
                                 break
                             file_texts[uf.name] = text
+                            file_diag.text_length = len(text)
 
                             # Sub-step: extraction via LLM
                             mid_pct = int(((i + 0.5) / n_files) * 100)
@@ -727,7 +753,7 @@ with tab_extract:
                                 unsafe_allow_html=True,
                             )
 
-                            atoms = brain.extract_atoms(text, uf.name)
+                            atoms = brain.extract_atoms(text, uf.name, diag=file_diag)
                             all_atoms.extend(atoms)
 
                             recovery_note = ""
@@ -761,6 +787,8 @@ with tab_extract:
 
                         except Exception as e:
                             last_extraction_error = e
+                            file_diag.llm_call_ok = False
+                            file_diag.llm_call_error = f"{type(e).__name__}: {e}"
                             healer.record_failure(
                                 "file_extraction", e,
                                 context={"filename": uf.name, "attempt": attempt},
@@ -778,6 +806,8 @@ with tab_extract:
                                 )
                                 import time as _time
                                 _time.sleep(wait)
+
+                    diagnostics.add(file_diag)
 
                     if not succeeded and uf.name not in failed_files:
                         failed_files.append(uf.name)
@@ -830,6 +860,7 @@ with tab_extract:
                 st.session_state["file_texts"] = file_texts
                 st.session_state["resolution_state"] = resolution_state
                 st.session_state["extraction_done"] = True
+                st.session_state["extraction_diagnostics"] = diagnostics
 
                 # If no conflicts, auto-resolve
                 if resolution_state.total_count == 0:
@@ -857,6 +888,32 @@ with tab_extract:
                 )
             else:
                 st.success("\u2705 No conflicts. Navigate to **\u2462 MPR View** or **\u2464 Export**.")
+
+            # ── Extraction Diagnostics Panel ──────────────
+            diag_data: ExtractionDiagnostics | None = st.session_state.get(
+                "extraction_diagnostics"
+            )
+            if diag_data is not None:
+                show_diag = diag_data.has_any_problems() or total == 0
+                label = (
+                    "Extraction Diagnostics (issues detected)"
+                    if show_diag
+                    else "Extraction Diagnostics"
+                )
+                with st.expander(label, expanded=show_diag):
+                    if total == 0:
+                        st.error(
+                            "No atoms were extracted. The diagnostics below "
+                            "show what happened at each stage of the pipeline."
+                        )
+                    for fd in diag_data.file_diags:
+                        icon = "x" if fd.has_problems() else "white_check_mark"
+                        with st.expander(
+                            f":{icon}: `{fd.filename}`",
+                            expanded=fd.has_problems(),
+                        ):
+                            for line in fd.summary_lines():
+                                st.text(line)
 
 # ════════════════════════════════════════════════
 # TAB 2 – CONFLICT RESOLUTION
