@@ -6,6 +6,8 @@ Master Production Record Generator
 from __future__ import annotations
 
 import html
+import importlib
+import importlib.util
 import io
 import logging
 import os
@@ -13,11 +15,42 @@ import sys
 import textwrap
 from datetime import datetime, timezone
 
-# Ensure the app directory is on sys.path so local modules are found
-# (required for Streamlit Cloud where CWD may differ from the app directory)
+# ---------------------------------------------------------------------------
+# Robust local-module loading for Streamlit Cloud
+# ---------------------------------------------------------------------------
+# On Streamlit Cloud the CWD, sys.path, and cached sys.modules entries can all
+# diverge from what a normal ``python app.py`` invocation would see.  To avoid
+# ImportError / ModuleNotFoundError we:
+#   1. Put the app directory first on sys.path.
+#   2. Evict any stale or foreign module-cache entries for our local modules.
+#   3. Pre-load each local module by its *absolute file path* using importlib
+#      so that Python never accidentally picks up a same-named package from
+#      site-packages or another directory on sys.path.
+
 _app_dir = os.path.dirname(os.path.abspath(__file__))
 if _app_dir not in sys.path:
     sys.path.insert(0, _app_dir)
+
+_LOCAL_MODULES = ("self_healer", "engine", "resolver", "chemistry")
+
+for _mod_name in _LOCAL_MODULES:
+    # Remove stale / foreign / partially-initialised cache entries
+    _cached = sys.modules.get(_mod_name)
+    if _cached is not None:
+        _cached_file = getattr(_cached, "__file__", None)
+        if _cached_file is None or os.path.abspath(_cached_file) != os.path.join(
+            _app_dir, _mod_name + ".py"
+        ):
+            del sys.modules[_mod_name]
+
+for _mod_name in _LOCAL_MODULES:
+    if _mod_name not in sys.modules:
+        _mod_path = os.path.join(_app_dir, _mod_name + ".py")
+        _spec = importlib.util.spec_from_file_location(_mod_name, _mod_path)
+        if _spec and _spec.loader:
+            _mod = importlib.util.module_from_spec(_spec)
+            sys.modules[_mod_name] = _mod
+            _spec.loader.exec_module(_mod)
 
 log = logging.getLogger(__name__)
 
