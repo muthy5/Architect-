@@ -1,6 +1,8 @@
 """
 engine.py — TechnicalAtom Pydantic model · OperationalBrain (extraction + hoisting + taxonomy)
 20-point taxonomy with alias map for normalising category names.
+Self-healing: LLM calls and JSON parsing auto-recover from failures using
+learned strategies from previous runs.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
+
+from self_healer import get_healer
 
 # ---------------------------------------------------------------------------
 # 20-point taxonomy
@@ -514,15 +518,52 @@ def call_llm(
     """Dispatch a prompt to the chosen LLM provider and return raw text.
 
     Retries automatically on transient errors (rate-limit, timeout, overloaded).
+    Self-healing: also records outcomes and applies learned recovery strategies
+    (input truncation on token-limit errors, stronger JSON instructions, etc.).
     """
+    healer = get_healer()
+
     if provider.lower() == "anthropic":
-        model = model or get_tier_model("anthropic", tier)
-        return _retry_on_transient(_call_anthropic, prompt, system, model, api_key, max_tokens)
+        resolved_model = model or get_tier_model("anthropic", tier)
+        fn = _call_anthropic
     elif provider.lower() == "openai":
-        model = model or get_tier_model("openai", tier)
-        return _retry_on_transient(_call_openai, prompt, system, model, api_key, max_tokens)
+        resolved_model = model or get_tier_model("openai", tier)
+        fn = _call_openai
     else:
         raise ValueError(f"Unknown provider: {provider}")
+
+    context = {"provider": provider, "model": resolved_model}
+
+    # -- Recovery handlers that modify args/kwargs before retry --
+    def _reduce_input(args, kwargs, error):
+        """Truncate prompt to ~60% to fit token limits."""
+        p, s, m, k, mt = args
+        truncated = p[: int(len(p) * 0.6)]
+        truncated += "\n\n[...truncated for length — extract what you can from above...]"
+        return (truncated, s, m, k, mt), kwargs
+
+    def _add_json_instruction(args, kwargs, error):
+        """Reinforce JSON output instruction in system prompt."""
+        p, s, m, k, mt = args
+        s += (
+            "\n\nCRITICAL: Your previous response was not valid JSON. "
+            "You MUST return ONLY a JSON array. No markdown, no commentary."
+        )
+        return (p, s, m, k, mt), kwargs
+
+    recovery_handlers = {
+        "reduce_input_size": _reduce_input,
+        "add_json_instruction": _add_json_instruction,
+    }
+
+    return healer.execute_with_healing(
+        operation="llm_call",
+        func=fn,
+        *(prompt, system, resolved_model, api_key, max_tokens),
+        context=context,
+        max_retries=3,
+        recovery_handlers=recovery_handlers,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -651,27 +692,77 @@ class OperationalBrain:
     def _parse_atoms(raw: str, source_file: str) -> list[TechnicalAtom]:
         """Parse the LLM JSON response into TechnicalAtom instances.
 
-        Returns parsed atoms.  Logs warnings for skipped items so the user
-        can see why some data was dropped.
+        Self-healing: applies progressively aggressive cleanup strategies
+        when JSON parsing fails, and records outcomes for future learning.
+        Logs warnings for skipped items so the user can see why data was dropped.
         """
-        # Strip markdown fences if the LLM added them
-        cleaned = re.sub(r"```(?:json)?", "", raw).strip()
-        cleaned = cleaned.strip("`").strip()
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Try to find a JSON array in the response
-            match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
-                    log.warning("Could not parse any JSON from LLM response for %s", source_file)
-                    return []
-            else:
-                log.warning("No JSON array found in LLM response for %s (response length: %d chars)",
-                            source_file, len(raw))
-                return []
+        healer = get_healer()
+
+        # --- Layered cleanup strategies ---
+        def _clean_level_0(text: str) -> str:
+            """Basic cleanup: strip markdown fences."""
+            c = re.sub(r"```(?:json)?", "", text).strip()
+            return c.strip("`").strip()
+
+        def _clean_level_1(text: str) -> str:
+            """Extract JSON array via regex."""
+            match = re.search(r"\[.*\]", text, re.DOTALL)
+            return match.group() if match else text
+
+        def _clean_level_2(text: str) -> str:
+            """Aggressive: fix common LLM JSON mistakes."""
+            c = _clean_level_1(text)
+            # Fix trailing commas before ] or }
+            c = re.sub(r",\s*([}\]])", r"\1", c)
+            # Fix single quotes -> double quotes
+            c = c.replace("'", '"')
+            # Remove control characters
+            c = re.sub(r"[\x00-\x1f\x7f]", " ", c)
+            return c
+
+        def _clean_level_3(text: str) -> str:
+            """Nuclear: extract individual JSON objects and rebuild array."""
+            objects = re.findall(r"\{[^{}]*\}", text, re.DOTALL)
+            if objects:
+                return "[" + ",".join(objects) + "]"
+            return "[]"
+
+        cleaners = [_clean_level_0, _clean_level_1, _clean_level_2, _clean_level_3]
+
+        data = None
+        last_error = None
+        used_strategy = None
+
+        for level, cleaner in enumerate(cleaners):
+            try:
+                cleaned = cleaner(raw)
+                data = json.loads(cleaned)
+                if level > 0:
+                    used_strategy = f"json_cleanup_level_{level}"
+                    log.info("JSON parsed at cleanup level %d for %s", level, source_file)
+                break
+            except (json.JSONDecodeError, Exception) as e:
+                last_error = e
+                continue
+
+        if data is None:
+            log.warning("All JSON cleanup strategies failed for %s (response length: %d chars)",
+                        source_file, len(raw))
+            healer.record_failure(
+                "json_parse",
+                last_error or ValueError("All JSON cleanup strategies failed"),
+                context={"source_file": source_file, "raw_length": len(raw)},
+            )
+            return []
+
+        # Record success (with strategy if recovery was needed)
+        healer.record_success(
+            "json_parse",
+            context={"source_file": source_file, "atom_count": len(data) if isinstance(data, list) else 0},
+            recovery_strategy=used_strategy,
+        )
+        if used_strategy and last_error:
+            healer.learn_strategy("json_parse", last_error, used_strategy, succeeded=True)
 
         if not isinstance(data, list):
             log.warning("LLM returned non-array JSON for %s", source_file)

@@ -27,6 +27,7 @@ from resolver import (
     flatten_taxonomy,
     resolve_conflict,
 )
+from self_healer import get_healer
 
 # ──────────────────────────────────────────────
 # Page Config
@@ -232,28 +233,115 @@ with st.sidebar:
             st.session_state[k] = defaults[k]
         st.rerun()
 
+    # ── Self-Healing Dashboard ─────────────
+    st.markdown("---")
+    st.markdown("### Self-Healing")
+    healer_sidebar = get_healer()
+    stats = healer_sidebar.get_stats()
+
+    if stats["total_runs"] > 0:
+        st.markdown(
+            f"<small>"
+            f"Runs: <b>{stats['total_runs']}</b> &nbsp;|&nbsp; "
+            f"Success: <b>{stats['success_rate']}</b> &nbsp;|&nbsp; "
+            f"Recoveries: <b>{stats['total_recoveries']}</b>"
+            f"</small>",
+            unsafe_allow_html=True,
+        )
+        if stats["top_errors"]:
+            st.markdown("<small><b>Top errors:</b></small>", unsafe_allow_html=True)
+            for err_type, count in stats["top_errors"][:3]:
+                st.markdown(
+                    f"<small style='color:#f87171;'>&nbsp;&nbsp;{err_type}: {count}</small>",
+                    unsafe_allow_html=True,
+                )
+        if stats["top_strategies"]:
+            st.markdown("<small><b>Learned strategies:</b></small>", unsafe_allow_html=True)
+            for s in stats["top_strategies"][:3]:
+                st.markdown(
+                    f"<small style='color:#6ee7b7;'>"
+                    f"&nbsp;&nbsp;{s['name']}: {s['success_rate']} ({s['uses']} uses)"
+                    f"</small>",
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.markdown(
+            "<small style='color:#4a5568;'>No run history yet. "
+            "Errors and recoveries will appear here.</small>",
+            unsafe_allow_html=True,
+        )
+
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
 
 def read_file(uploaded) -> str:
-    """Extract text from TXT, MD, or PDF upload."""
+    """Extract text from TXT, MD, or PDF upload.
+
+    Self-healing: records file-read outcomes and applies learned encoding
+    strategies on failure.
+    """
+    healer = get_healer()
     name = uploaded.name.lower()
+
     if name.endswith(".pdf"):
         try:
             from pypdf import PdfReader
             reader = PdfReader(io.BytesIO(uploaded.read()))
-            return "\n".join(
+            text = "\n".join(
                 page.extract_text() or "" for page in reader.pages
             )
+            healer.record_success("file_read", context={"filename": uploaded.name, "type": "pdf"})
+            return text
         except Exception as e:
+            healer.record_failure("file_read", e, context={"filename": uploaded.name, "type": "pdf"})
+            # Self-heal: try reading raw bytes as fallback
+            try:
+                uploaded.seek(0)
+                raw = uploaded.read()
+                text = raw.decode("latin-1", errors="replace")
+                if len(text.strip()) > 50:
+                    healer.record_success(
+                        "file_read",
+                        context={"filename": uploaded.name, "type": "pdf_fallback"},
+                        recovery_strategy="try_alternate_encoding",
+                    )
+                    healer.learn_strategy("file_read", e, "try_alternate_encoding", succeeded=True)
+                    return text
+            except Exception:
+                pass
             return f"[PDF read error: {e}]"
     else:
         raw = uploaded.read()
-        for enc in ("utf-8", "latin-1", "cp1252"):
+        # Check history for a preferred encoding that worked before
+        preferred_encodings = ["utf-8", "latin-1", "cp1252"]
+        for record in reversed(healer.history[-50:]):
+            if (
+                record.operation == "file_read"
+                and record.success
+                and record.context.get("encoding")
+                and record.context["encoding"] not in preferred_encodings[:1]
+            ):
+                # Move the historically successful encoding to front
+                enc = record.context["encoding"]
+                if enc in preferred_encodings:
+                    preferred_encodings.remove(enc)
+                    preferred_encodings.insert(0, enc)
+                break
+
+        for enc in preferred_encodings:
             try:
-                return raw.decode(enc)
-            except UnicodeDecodeError:
+                text = raw.decode(enc)
+                healer.record_success(
+                    "file_read",
+                    context={"filename": uploaded.name, "type": "text", "encoding": enc},
+                )
+                return text
+            except UnicodeDecodeError as e:
+                healer.record_failure(
+                    "file_read", e,
+                    context={"filename": uploaded.name, "type": "text", "encoding": enc},
+                )
                 continue
         return raw.decode("utf-8", errors="replace")
 
@@ -434,7 +522,10 @@ def build_pdf(taxonomy: Dict[str, List[TechnicalAtom]], title: str) -> bytes:
         return bytes(pdf.output())
 
     except Exception as e:
-        # Fallback: encode markdown as bytes
+        # Self-healing: record failure and apply learned fallback
+        healer = get_healer()
+        healer.record_failure("pdf_export", e, context={"title": title})
+        healer.learn_strategy("pdf_export", e, "fallback_pdf_to_markdown", succeeded=True)
         st.warning(f"PDF generation failed ({e}). Falling back to Markdown bytes.")
         md = build_markdown(taxonomy, title)
         return md.encode("utf-8")
@@ -496,6 +587,8 @@ with tab_extract:
                 status_area = st.empty()
                 failed_files: List[str] = []
 
+                healer = get_healer()
+
                 for i, uf in enumerate(uploaded_files):
                     # Progress: show file N/M and a sub-step
                     base_pct = int((i / n_files) * 100)
@@ -504,54 +597,93 @@ with tab_extract:
                         f"<small style='color:#4a90d9;'>Reading {uf.name}\u2026</small>",
                         unsafe_allow_html=True,
                     )
-                    try:
-                        text = read_file(uf)
-                        if text.startswith("[PDF read error"):
-                            st.warning(f"Could not read `{uf.name}`. It may be a scanned/image-only PDF.")
-                            failed_files.append(uf.name)
-                            continue
-                        if len(text.strip()) < 20:
-                            st.warning(f"`{uf.name}` appears to be empty or too short to extract from.")
-                            failed_files.append(uf.name)
-                            continue
-                        file_texts[uf.name] = text
 
-                        # Sub-step: extraction via LLM
-                        mid_pct = int(((i + 0.5) / n_files) * 100)
-                        progress.progress(mid_pct, text=f"[{i+1}/{n_files}] Extracting specs from `{uf.name}`\u2026")
-                        status_area.markdown(
-                            f"<small style='color:#4a90d9;'>Calling LLM for {uf.name}\u2026 (this may take a moment)</small>",
-                            unsafe_allow_html=True,
-                        )
+                    max_file_retries = 2
+                    succeeded = False
 
-                        atoms = brain.extract_atoms(text, uf.name)
-                        all_atoms.extend(atoms)
+                    for attempt in range(max_file_retries + 1):
+                        try:
+                            uf.seek(0)  # Reset file pointer for retries
+                            text = read_file(uf)
+                            if text.startswith("[PDF read error"):
+                                st.warning(f"Could not read `{uf.name}`. It may be a scanned/image-only PDF.")
+                                failed_files.append(uf.name)
+                                break
+                            if len(text.strip()) < 20:
+                                st.warning(f"`{uf.name}` appears to be empty or too short to extract from.")
+                                failed_files.append(uf.name)
+                                break
+                            file_texts[uf.name] = text
 
-                        if len(atoms) == 0:
+                            # Sub-step: extraction via LLM
+                            mid_pct = int(((i + 0.5) / n_files) * 100)
+                            progress.progress(mid_pct, text=f"[{i+1}/{n_files}] Extracting specs from `{uf.name}`\u2026")
                             status_area.markdown(
-                                f"<small style='color:#f59e0b;'>\u26a0 {uf.name} \u2192 0 atoms extracted. "
-                                f"The document may not contain recognisable technical specifications.</small>",
+                                f"<small style='color:#4a90d9;'>Calling LLM for {uf.name}\u2026 (this may take a moment)</small>",
                                 unsafe_allow_html=True,
                             )
-                        else:
-                            status_area.markdown(
-                                f"<small style='color:#6ee7b7;'>\u2713 {uf.name} \u2192 {len(atoms)} atoms</small>",
-                                unsafe_allow_html=True,
+
+                            atoms = brain.extract_atoms(text, uf.name)
+                            all_atoms.extend(atoms)
+
+                            recovery_note = ""
+                            if attempt > 0:
+                                recovery_note = f" (self-healed after {attempt} retry)"
+                                healer.record_success(
+                                    "file_extraction",
+                                    context={"filename": uf.name, "attempt": attempt},
+                                    recovery_strategy="retry_with_backoff",
+                                )
+
+                            if len(atoms) == 0:
+                                status_area.markdown(
+                                    f"<small style='color:#f59e0b;'>\u26a0 {uf.name} \u2192 0 atoms extracted. "
+                                    f"The document may not contain recognisable technical specifications.</small>",
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                status_area.markdown(
+                                    f"<small style='color:#6ee7b7;'>"
+                                    f"\u2713 {uf.name} \u2192 {len(atoms)} atoms{recovery_note}"
+                                    f"</small>",
+                                    unsafe_allow_html=True,
+                                )
+                            succeeded = True
+                            break
+
+                        except Exception as e:
+                            healer.record_failure(
+                                "file_extraction", e,
+                                context={"filename": uf.name, "attempt": attempt},
                             )
-                    except Exception as e:
+                            if attempt < max_file_retries:
+                                strategies = healer.get_recovery_strategies("file_extraction", e)
+                                wait = 2 ** (attempt + 1)
+                                status_area.markdown(
+                                    f"<small style='color:#f59e0b;'>"
+                                    f"\u26a0 {uf.name} failed (attempt {attempt+1}), "
+                                    f"retrying in {wait}s "
+                                    f"[strategy: {strategies[0] if strategies else 'backoff'}]"
+                                    f"</small>",
+                                    unsafe_allow_html=True,
+                                )
+                                import time as _time
+                                _time.sleep(wait)
+
+                    if not succeeded and uf.name not in failed_files:
                         failed_files.append(uf.name)
-                        err_msg = str(e)
+                        err_msg = str(healer.get_recent_failures(1)[0].error_message) if healer.get_recent_failures(1) else "Unknown error"
                         # Translate common API errors into user-friendly messages
                         if "authentication" in err_msg.lower() or "401" in err_msg:
                             st.error(f"`{uf.name}`: API key is invalid or expired. Check your key in the sidebar.")
                         elif "rate" in err_msg.lower() or "429" in err_msg:
-                            st.error(f"`{uf.name}`: API rate limit hit. Wait a moment and try again.")
+                            st.error(f"`{uf.name}`: API rate limit hit after {max_file_retries+1} attempts.")
                         elif "overloaded" in err_msg.lower() or "503" in err_msg:
-                            st.error(f"`{uf.name}`: The AI service is temporarily overloaded. Try again shortly.")
+                            st.error(f"`{uf.name}`: The AI service is temporarily overloaded after {max_file_retries+1} attempts.")
                         elif "timeout" in err_msg.lower():
-                            st.error(f"`{uf.name}`: Request timed out. The document may be too large — try splitting it.")
+                            st.error(f"`{uf.name}`: Request timed out. The document may be too large.")
                         else:
-                            st.error(f"Error processing `{uf.name}`: {err_msg}")
+                            st.error(f"Error processing `{uf.name}` after {max_file_retries+1} attempts. Check the Self-Healing Dashboard.")
 
                 progress.progress(100, text="Extraction complete.")
 
