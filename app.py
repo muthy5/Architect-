@@ -8,8 +8,16 @@ from __future__ import annotations
 import html
 import io
 import logging
+import os
+import sys
 import textwrap
 from datetime import datetime, timezone
+
+# Ensure the app directory is on sys.path so local modules are found
+# (required for Streamlit Cloud where CWD may differ from the app directory)
+_app_dir = os.path.dirname(os.path.abspath(__file__))
+if _app_dir not in sys.path:
+    sys.path.insert(0, _app_dir)
 
 log = logging.getLogger(__name__)
 
