@@ -16,7 +16,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -41,12 +41,12 @@ class RunRecord:
 
     timestamp: str
     operation: str               # e.g. "llm_call", "json_parse", "file_read"
-    context: Dict[str, Any]      # provider, model, filename, etc.
+    context: dict[str, Any]      # provider, model, filename, etc.
     success: bool
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
-    error_fingerprint: Optional[str] = None
-    recovery_strategy: Optional[str] = None
+    error_type: str | None = None
+    error_message: str | None = None
+    error_fingerprint: str | None = None
+    recovery_strategy: str | None = None
     recovery_succeeded: bool = False
     duration_ms: float = 0.0
 
@@ -64,7 +64,7 @@ class RecoveryStrategy:
 
     error_fingerprint: str
     strategy_name: str
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     success_count: int = 0
     fail_count: int = 0
 
@@ -125,7 +125,7 @@ def _fingerprint(operation: str, error_type: str, error_msg: str) -> str:
 # ---------------------------------------------------------------------------
 
 # Registry of strategy names -> descriptions
-STRATEGY_REGISTRY: Dict[str, str] = {
+STRATEGY_REGISTRY: dict[str, str] = {
     "retry_with_backoff":       "Retry after exponential backoff delay",
     "retry_with_longer_timeout": "Retry with increased timeout",
     "reduce_input_size":        "Truncate input text to fit token limits",
@@ -139,7 +139,7 @@ STRATEGY_REGISTRY: Dict[str, str] = {
 }
 
 # Default strategy mapping: fingerprint bucket -> ordered strategies to try
-_DEFAULT_STRATEGIES: Dict[str, List[str]] = {
+_DEFAULT_STRATEGIES: dict[str, list[str]] = {
     "rate_limit":       ["retry_with_backoff"],
     "timeout":          ["retry_with_longer_timeout", "reduce_input_size"],
     "network":          ["retry_with_backoff"],
@@ -186,8 +186,8 @@ class SelfHealer:
 
     def __init__(self, history_file: Path | str | None = None):
         self.history_file = Path(history_file) if history_file else HISTORY_FILE
-        self.history: List[RunRecord] = []
-        self.strategies: Dict[str, RecoveryStrategy] = {}  # fingerprint -> best strategy
+        self.history: list[RunRecord] = []
+        self.strategies: dict[str, RecoveryStrategy] = {}  # fingerprint -> best strategy
         self._load_history()
 
     # ------------------------------------------------------------------
@@ -234,7 +234,7 @@ class SelfHealer:
     def record_success(
         self,
         operation: str,
-        context: Dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
         duration_ms: float = 0.0,
         recovery_strategy: str | None = None,
     ) -> None:
@@ -262,7 +262,7 @@ class SelfHealer:
         self,
         operation: str,
         error: Exception,
-        context: Dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
         duration_ms: float = 0.0,
         recovery_strategy: str | None = None,
     ) -> str:
@@ -302,7 +302,7 @@ class SelfHealer:
         self,
         operation: str,
         error: Exception,
-    ) -> List[str]:
+    ) -> list[str]:
         """Get ordered list of recovery strategies for this error.
 
         Prioritizes strategies that worked before for similar errors, then
@@ -313,7 +313,7 @@ class SelfHealer:
         fp = _fingerprint(operation, error_type, error_msg)
         bucket = _bucket_from_fingerprint(operation, error_type, error_msg)
 
-        strategies: List[str] = []
+        strategies: list[str] = []
 
         # 1. Check if we have a learned strategy for this exact fingerprint
         if fp in self.strategies:
@@ -322,7 +322,7 @@ class SelfHealer:
                 strategies.append(learned.strategy_name)
 
         # 2. Check history for strategies that worked for similar operations
-        similar_successes: Dict[str, int] = defaultdict(int)
+        similar_successes: dict[str, int] = defaultdict(int)
         for record in reversed(self.history[-100:]):
             if (
                 record.operation == operation
@@ -381,9 +381,9 @@ class SelfHealer:
         operation: str,
         func: Callable[..., Any],
         *args: Any,
-        context: Dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
         max_retries: int = MAX_RETRIES_DEFAULT,
-        recovery_handlers: Dict[str, Callable] | None = None,
+        recovery_handlers: dict[str, Callable] | None = None,
         **kwargs: Any,
     ) -> Any:
         """Execute a function with automatic error recovery.
@@ -468,7 +468,7 @@ class SelfHealer:
     # Stats & diagnostics
     # ------------------------------------------------------------------
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Return summary statistics from run history."""
         if not self.history:
             return {
@@ -484,7 +484,7 @@ class SelfHealer:
         recoveries = sum(1 for r in self.history if r.recovery_succeeded)
 
         # Top error types
-        error_counts: Dict[str, int] = defaultdict(int)
+        error_counts: dict[str, int] = defaultdict(int)
         for r in self.history:
             if not r.success and r.error_type:
                 error_counts[r.error_type] += 1
@@ -508,7 +508,7 @@ class SelfHealer:
             "top_strategies": strategy_stats[:5],
         }
 
-    def get_recent_failures(self, limit: int = 10) -> List[RunRecord]:
+    def get_recent_failures(self, limit: int = 10) -> list[RunRecord]:
         """Get most recent failures for diagnostics."""
         return [r for r in reversed(self.history) if not r.success][:limit]
 

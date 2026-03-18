@@ -9,7 +9,6 @@ import html
 import io
 import textwrap
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
 
 import streamlit as st
 
@@ -449,7 +448,7 @@ def _atom_html(atom: TechnicalAtom) -> str:
     )
 
 
-def render_taxonomy(taxonomy: Dict[str, List[TechnicalAtom]]) -> None:
+def render_taxonomy(taxonomy: dict[str, list[TechnicalAtom]]) -> None:
     for section in TAXONOMY_SECTIONS:
         atoms = taxonomy.get(section, [])
         count_label = f"({len(atoms)} atoms)" if atoms else "\u26a0\ufe0f EMPTY"
@@ -468,7 +467,7 @@ def render_taxonomy(taxonomy: Dict[str, List[TechnicalAtom]]) -> None:
                 st.markdown(html, unsafe_allow_html=True)
 
 
-def render_gap_audit(taxonomy: Dict[str, List[TechnicalAtom]]) -> None:
+def render_gap_audit(taxonomy: dict[str, list[TechnicalAtom]]) -> None:
     gaps = [
         s
         for s in TAXONOMY_SECTIONS
@@ -498,7 +497,7 @@ def render_gap_audit(taxonomy: Dict[str, List[TechnicalAtom]]) -> None:
 # Export helpers
 # ──────────────────────────────────────────────
 
-def build_markdown(taxonomy: Dict[str, List[TechnicalAtom]], title: str) -> str:
+def build_markdown(taxonomy: dict[str, list[TechnicalAtom]], title: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         f"# {title}",
@@ -524,7 +523,7 @@ def build_markdown(taxonomy: Dict[str, List[TechnicalAtom]], title: str) -> str:
     return "\n".join(lines)
 
 
-def build_pdf(taxonomy: Dict[str, List[TechnicalAtom]], title: str) -> bytes:
+def build_pdf(taxonomy: dict[str, list[TechnicalAtom]], title: str) -> bytes:
     try:
         from fpdf import FPDF
 
@@ -669,8 +668,8 @@ with tab_extract:
             else:
                 st.session_state["extraction_done"] = False
                 st.session_state["resolution_done"] = False
-                all_atoms: List[TechnicalAtom] = []
-                file_texts: Dict[str, str] = {}
+                all_atoms: list[TechnicalAtom] = []
+                file_texts: dict[str, str] = {}
 
                 brain = OperationalBrain(
                     provider=provider,
@@ -682,7 +681,7 @@ with tab_extract:
                 n_files = len(uploaded_files)
                 progress = st.progress(0, text="Starting extraction\u2026")
                 status_area = st.empty()
-                failed_files: List[str] = []
+                failed_files: list[str] = []
 
                 healer = get_healer()
 
@@ -853,7 +852,7 @@ with tab_extract:
 with tab_resolve:
     st.markdown("### Step 2 \u00b7 Resolve Data Conflicts")
 
-    rs: Optional[ResolutionState] = st.session_state.get("resolution_state")
+    rs: ResolutionState | None = st.session_state.get("resolution_state")
 
     if not st.session_state["extraction_done"]:
         st.info("Run extraction first (Tab \u2460).")
