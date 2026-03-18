@@ -1,0 +1,899 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Layman Procedural Document v3",
+  "description": "Chronological, layman-friendly procedural document schema. Acquire -> Stage -> Execute (phased) -> Verify -> Shutdown -> Emergency Shutdown. v3 adds: phases, presentation hierarchy, progress tracking, difficulty ratings, atomic actions, recovery step sequences, dependency graphs, sensory training, PPE tracking, body positioning, common mistakes, layman analogies, pre-action checklists, cumulative timing, and rendering directives.",
+  "type": "object",
+  "required": ["meta", "acquire", "stage", "execute", "verify", "shutdown", "emergencyShutdown"],
+
+  "_renderingDirectives": {
+    "description": "Instructions for any renderer consuming this schema.",
+    "nullFieldBehavior": "hide",
+    "_comment": "Only render non-null optional fields. Never show empty boxes.",
+    "displayOrder": {
+      "step": [
+        "phaseContext",
+        "difficultyRating",
+        "summary",
+        "laymanAnalogy",
+        "ppe",
+        "preActionChecklist",
+        "action",
+        "directionOfDirection",
+        "bodyPosition",
+        "sensoryCheckpoint",
+        "gate",
+        "monitoringLog",
+        "alerts",
+        "commonMistake",
+        "consequence",
+        "cleanup",
+        "transition"
+      ],
+      "_comment": "Fields listed top-to-bottom in visual weight order. Items earlier in the list are more prominent."
+    },
+    "visualWeight": {
+      "prominent": ["summary", "action", "sensoryCheckpoint", "alerts", "gate"],
+      "standard": ["directionOfDirection", "preActionChecklist", "ppe", "bodyPosition", "commonMistake", "consequence"],
+      "collapsible": ["whyThisMatters", "laymanAnalogy", "calibration", "monitoringLog", "scaleRules", "pauseInfo", "glossaryTerms", "cleanup"],
+      "_comment": "Prominent = large/bold. Standard = visible but secondary. Collapsible = hidden behind a tap/click."
+    },
+    "crossCuttingRiskInjection": "inline",
+    "_commentRisk": "Risks from meta.crossCuttingRisks MUST also render inline at each step listed in their affectsSteps array, not only in the front-matter."
+  },
+
+  "properties": {
+
+    "meta": {
+      "type": "object",
+      "required": ["title", "objective", "estimatedTotalTime"],
+      "properties": {
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "objective": { "type": "string", "description": "One plain-english sentence: what does this procedure accomplish?" },
+        "estimatedTotalTime": { "type": "string", "description": "e.g. '6-8 hours across 2 days'" },
+        "audienceLevel": { "type": "string", "enum": ["layman", "technician", "expert"], "default": "layman" },
+        "revisionId": { "type": "string" },
+
+        "sensorReference": {
+          "type": "array",
+          "description": "Global sensory baselines across the whole procedure (smell table, color reference, etc.).",
+          "items": {
+            "type": "object",
+            "required": ["sense", "entries"],
+            "properties": {
+              "sense": { "type": "string", "enum": ["sight", "sound", "smell", "touch", "weight"] },
+              "title": { "type": "string" },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["stimulus", "interpretation"],
+                  "properties": {
+                    "stimulus": { "type": "string" },
+                    "interpretation": { "type": "string" },
+                    "action": { "type": "string" },
+                    "referenceComparison": { "type": "string", "description": "Everyday object comparison, e.g. 'Color of a new copper penny'" }
+                  }
+                }
+              }
+            }
+          }
+        },
+
+        "crossCuttingRisks": {
+          "type": "array",
+          "description": "Risks spanning multiple steps. Rendered both here AND inline at affected steps.",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "risk", "direction", "consequence"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "risk": { "type": "string" },
+              "direction": { "type": "string" },
+              "directionOfDirection": { "type": "string" },
+              "consequence": { "type": "string" },
+              "affectsSteps": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "acquire": {
+      "type": "object",
+      "description": "LAYER 1: Materials acquisition. Cards with dual-grouping (by source and by zone).",
+      "required": ["materials"],
+      "properties": {
+        "materials": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "commonName", "visualId", "quantity", "sourceType", "zone", "substitutes", "usedIn"],
+            "properties": {
+              "id": { "type": "string" },
+              "commonName": { "type": "string", "description": "What to call it when asking for it." },
+              "technicalName": { "type": "string", "description": "What the label will say. Omit if same as commonName." },
+              "visualId": {
+                "type": "object",
+                "required": ["appearance"],
+                "properties": {
+                  "icon": { "type": "string" },
+                  "appearance": { "type": "string", "description": "Color, texture, size, weight feel." },
+                  "lookalike": { "type": "string", "description": "What it could be confused with and how to differentiate." },
+                  "referenceComparison": { "type": "string", "description": "Everyday object: 'About the size of a AA battery'" }
+                }
+              },
+              "quantity": { "type": "string" },
+              "sourceType": { "type": "string", "description": "'lab_supply', 'hardware_store', 'gas_supplier', 'pharmacy', 'online', 'specialty'" },
+              "sourceNotes": { "type": "string" },
+              "pricing": {
+                "type": "object",
+                "properties": {
+                  "estimatedRange": { "type": "string" },
+                  "currency": { "type": "string", "default": "USD" },
+                  "recommendedVendors": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  },
+                  "budgetTip": { "type": "string" }
+                }
+              },
+              "zone": { "type": "string", "description": "Must match a stage.zones[].id" },
+              "substitutes": {
+                "type": "object",
+                "required": ["best"],
+                "properties": {
+                  "best": {
+                    "type": "object",
+                    "required": ["name", "why"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "why": { "type": "string" }
+                    }
+                  },
+                  "acceptable": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["name", "why", "tradeoff"],
+                      "properties": {
+                        "name": { "type": "string" },
+                        "why": { "type": "string" },
+                        "tradeoff": { "type": "string" }
+                      }
+                    }
+                  },
+                  "avoid": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["name", "why"],
+                      "properties": {
+                        "name": { "type": "string" },
+                        "why": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              },
+              "incomingInspection": {
+                "type": "object",
+                "description": "Verification test: buying it does not equal having a working one.",
+                "properties": {
+                  "testName": { "type": "string" },
+                  "direction": { "type": "string" },
+                  "directionOfDirection": { "type": "string" },
+                  "pass": { "type": "string" },
+                  "fail": { "type": "string" },
+                  "correction": { "type": "string" },
+                  "consequence": { "type": "string" }
+                }
+              },
+              "storage": {
+                "type": "object",
+                "required": ["direction", "why"],
+                "properties": {
+                  "direction": { "type": "string" },
+                  "why": { "type": "string" },
+                  "maxShelfLife": { "type": "string" },
+                  "degradationSign": { "type": "string" }
+                }
+              },
+              "usedIn": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["stepId", "purpose"],
+                  "properties": {
+                    "stepId": { "type": "string" },
+                    "purpose": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "stage": {
+      "type": "object",
+      "description": "LAYER 2: Workspace zone layout.",
+      "required": ["zones"],
+      "properties": {
+        "zones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "description", "materialIds"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "materialIds": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "spatialNotes": { "type": "string" },
+              "safetyNotes": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+
+    "execute": {
+      "type": "object",
+      "description": "LAYER 3: Phased chronological step sequence.",
+      "required": ["phases"],
+      "properties": {
+        "phases": {
+          "type": "array",
+          "description": "Logical groupings of steps. Provides chapter breaks and orientation.",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "summary", "steps"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string", "description": "e.g. 'System Assembly'" },
+              "summary": { "type": "string", "description": "One sentence: what this phase accomplishes overall." },
+              "dangerLevel": {
+                "type": "string",
+                "enum": ["safe", "caution", "dangerous"],
+                "description": "Overall danger level for this phase. Tells layman when the stakes rise."
+              },
+              "ppeForPhase": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "PPE that should be on for the entire phase."
+              },
+              "estimatedPhaseTime": { "type": "string" },
+
+              "steps": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "action", "sensoryCheckpoint"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "completed": { "type": "boolean", "default": false, "description": "Progress checkbox. Renderer should allow user to mark done." },
+
+                    "phaseContext": {
+                      "type": "string",
+                      "description": "'You are still building the hardware. Nothing is hot yet.' Orientation sentence."
+                    },
+                    "difficultyRating": {
+                      "type": "string",
+                      "enum": ["routine", "precision_required", "dangerous"],
+                      "description": "Tells the layman when to take a breath and focus."
+                    },
+                    "cumulativeTimeRemaining": {
+                      "type": "string",
+                      "description": "Approximate time from THIS step to procedure end, e.g. '~3 hours remaining'"
+                    },
+
+                    "summary": { "type": "string", "description": "One sentence: what this step accomplishes." },
+                    "laymanAnalogy": {
+                      "type": "string",
+                      "description": "Metaphor: 'Think of this like priming a lawnmower before pulling the cord.'"
+                    },
+                    "estimatedTime": { "type": "string" },
+
+                    "ppe": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "What protective equipment to be wearing RIGHT NOW. Changes per step."
+                    },
+                    "bodyPosition": {
+                      "type": "string",
+                      "description": "Where your body should be relative to the apparatus. e.g. 'Stand to the side, not directly in front.'"
+                    },
+
+                    "preActionChecklist": {
+                      "type": "array",
+                      "description": "Quick 'glance around' sanity checks BEFORE performing the action.",
+                      "items": {
+                        "type": "object",
+                        "required": ["check"],
+                        "properties": {
+                          "check": { "type": "string", "description": "e.g. 'Is the gas valve still open?'" },
+                          "how": { "type": "string", "description": "How to verify, e.g. 'Look at the valve handle -- parallel to pipe = open.'" }
+                        }
+                      }
+                    },
+
+                    "handState": {
+                      "type": "object",
+                      "description": "Explicit tool swap tracking.",
+                      "properties": {
+                        "putDown": { "type": "string", "description": "What to set down first, if anything." },
+                        "pickUp": { "type": "string", "description": "What to grab." },
+                        "materialId": { "type": "string" }
+                      }
+                    },
+
+                    "action": {
+                      "type": "string",
+                      "description": "ONE atomic imperative instruction. No compound actions. If two things must happen, they are two steps."
+                    },
+                    "directionOfDirection": {
+                      "type": "string",
+                      "description": "The granular physical HOW: 'finger-tight plus a quarter turn', 'tap the side with a rubber mallet while pouring'."
+                    },
+
+                    "sensoryCheckpoint": {
+                      "type": "object",
+                      "required": ["right", "wrong"],
+                      "properties": {
+                        "right": {
+                          "type": "object",
+                          "required": ["description"],
+                          "properties": {
+                            "description": { "type": "string" },
+                            "senses": {
+                              "type": "array",
+                              "items": { "type": "string", "enum": ["sight", "sound", "smell", "touch", "weight"] }
+                            },
+                            "referenceComparison": { "type": "string", "description": "Everyday object: 'Clear like tap water', 'Color of a new penny'" },
+                            "temporalCue": { "type": "string", "description": "Duration of the sensory event: 'Hissing lasts ~30 seconds then stops'" }
+                          }
+                        },
+                        "wrong": {
+                          "type": "object",
+                          "required": ["description", "consequence", "recovery"],
+                          "properties": {
+                            "description": { "type": "string" },
+                            "senses": {
+                              "type": "array",
+                              "items": { "type": "string", "enum": ["sight", "sound", "smell", "touch", "weight"] }
+                            },
+                            "referenceComparison": { "type": "string" },
+                            "temporalCue": { "type": "string" },
+                            "consequence": { "type": "string" },
+                            "batchSalvageable": { "type": "boolean", "description": "true = try to fix. false = dispose and restart." },
+                            "recovery": {
+                              "oneOf": [
+                                { "type": "string", "description": "Simple recovery instruction." },
+                                {
+                                  "type": "array",
+                                  "description": "Multi-step recovery sequence for complex failures.",
+                                  "items": {
+                                    "type": "object",
+                                    "required": ["step", "action"],
+                                    "properties": {
+                                      "step": { "type": "integer" },
+                                      "action": { "type": "string" },
+                                      "directionOfDirection": { "type": "string" }
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    },
+
+                    "gate": {
+                      "type": "object",
+                      "properties": {
+                        "condition": { "type": "string" },
+                        "checkMethod": {
+                          "type": "string",
+                          "enum": ["instrument", "sensory", "timed", "calculated"]
+                        },
+                        "howToCheck": { "type": "string" },
+                        "pass": { "type": "string" },
+                        "fail": {
+                          "type": "object",
+                          "required": ["action"],
+                          "properties": {
+                            "action": { "type": "string", "enum": ["stop", "repeat_step", "go_to_step", "dispose_and_restart", "hold_and_wait"] },
+                            "targetStepId": { "type": "string" },
+                            "batchSalvageable": { "type": "boolean" },
+                            "recoveryInstructions": {
+                              "oneOf": [
+                                { "type": "string" },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": ["step", "action"],
+                                    "properties": {
+                                      "step": { "type": "integer" },
+                                      "action": { "type": "string" },
+                                      "directionOfDirection": { "type": "string" }
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    },
+
+                    "commonMistake": {
+                      "type": "object",
+                      "description": "The #1 thing people get wrong at this specific step.",
+                      "properties": {
+                        "mistake": { "type": "string", "description": "What people do wrong." },
+                        "why": { "type": "string", "description": "Why they do it." },
+                        "correction": { "type": "string", "description": "What to do instead." }
+                      }
+                    },
+
+                    "consequence": {
+                      "type": "string",
+                      "description": "What breaks if you skip or botch this step."
+                    },
+
+                    "calibration": {
+                      "type": "object",
+                      "description": "Pre-flight tool/instrument verification.",
+                      "properties": {
+                        "direction": { "type": "string" },
+                        "directionOfDirection": { "type": "string" },
+                        "expectedResult": { "type": "string" },
+                        "tolerance": { "type": "string" },
+                        "failAction": { "type": "string" }
+                      }
+                    },
+
+                    "monitoringLog": {
+                      "type": "object",
+                      "description": "For long-running steps: timed recording template.",
+                      "properties": {
+                        "interval": { "type": "string" },
+                        "fields": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": ["name", "unit"],
+                            "properties": {
+                              "name": { "type": "string" },
+                              "unit": { "type": "string" },
+                              "normalRange": { "type": "string" },
+                              "alarmThreshold": { "type": "string" },
+                              "alarmAction": { "type": "string" }
+                            }
+                          }
+                        }
+                      }
+                    },
+
+                    "whyThisMatters": { "type": "string", "description": "Curiosity layer. Collapsible." },
+
+                    "glossaryTerms": {
+                      "type": "array",
+                      "description": "First-use only.",
+                      "items": {
+                        "type": "object",
+                        "required": ["term", "definition"],
+                        "properties": {
+                          "term": { "type": "string" },
+                          "definition": { "type": "string" }
+                        }
+                      }
+                    },
+
+                    "alerts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["level", "message"],
+                        "properties": {
+                          "level": { "type": "string", "enum": ["red", "yellow", "green"] },
+                          "title": { "type": "string" },
+                          "message": { "type": "string" }
+                        }
+                      }
+                    },
+
+                    "pauseInfo": {
+                      "type": "object",
+                      "properties": {
+                        "canPause": { "type": "boolean" },
+                        "maxPauseDuration": { "type": "string" },
+                        "requirements": { "type": "string" },
+                        "resumeSteps": {
+                          "oneOf": [
+                            { "type": "string" },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": ["step", "action"],
+                                "properties": {
+                                  "step": { "type": "integer" },
+                                  "action": { "type": "string" }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    },
+
+                    "cleanup": {
+                      "type": "object",
+                      "properties": {
+                        "wasteType": { "type": "string" },
+                        "disposalMethod": { "type": "string" },
+                        "cannotMixWith": {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        }
+                      }
+                    },
+
+                    "scaleRules": {
+                      "type": "object",
+                      "properties": {
+                        "scales": {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        },
+                        "fixed": {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        }
+                      }
+                    },
+
+                    "requires": {
+                      "type": "array",
+                      "description": "Explicit back-references to prerequisite steps.",
+                      "items": {
+                        "type": "object",
+                        "required": ["stepId", "condition"],
+                        "properties": {
+                          "stepId": { "type": "string" },
+                          "condition": { "type": "string", "description": "What must be true about that step, e.g. 'must have passed gate'" }
+                        }
+                      }
+                    },
+                    "unlocks": {
+                      "type": "array",
+                      "description": "Forward references: completing this step enables these future steps.",
+                      "items": { "type": "string" }
+                    },
+
+                    "transition": {
+                      "type": "object",
+                      "description": "4-section transition block to next step.",
+                      "properties": {
+                        "hardwareLibrary": {
+                          "type": "object",
+                          "required": ["zone", "tools"],
+                          "properties": {
+                            "title": { "type": "string" },
+                            "subtitle": { "type": "string" },
+                            "directive": { "type": "string" },
+                            "zone": { "type": "string" },
+                            "tools": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": ["materialId", "purpose"],
+                                "properties": {
+                                  "materialId": { "type": "string" },
+                                  "purpose": { "type": "string" },
+                                  "substitutes": {
+                                    "type": "object",
+                                    "properties": {
+                                      "best": {
+                                        "type": "object",
+                                        "properties": {
+                                          "name": { "type": "string" },
+                                          "why": { "type": "string" }
+                                        }
+                                      },
+                                      "acceptable": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "name": { "type": "string" },
+                                            "why": { "type": "string" },
+                                            "tradeoff": { "type": "string" }
+                                          }
+                                        }
+                                      },
+                                      "avoid": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "name": { "type": "string" },
+                                            "why": { "type": "string" }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "physicalReset": {
+                          "type": "object",
+                          "required": ["steps"],
+                          "properties": {
+                            "title": { "type": "string" },
+                            "subtitle": { "type": "string" },
+                            "narrative": { "type": "string" },
+                            "steps": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": ["label", "action", "observation"],
+                                "properties": {
+                                  "letter": { "type": "string" },
+                                  "label": { "type": "string" },
+                                  "action": { "type": "string" },
+                                  "directionOfDirection": { "type": "string" },
+                                  "observation": { "type": "string" },
+                                  "consequence": { "type": "string" }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "preparation": {
+                          "type": "object",
+                          "required": ["actions"],
+                          "properties": {
+                            "title": { "type": "string" },
+                            "subtitle": { "type": "string" },
+                            "narrative": { "type": "string" },
+                            "actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": ["text"],
+                                "properties": {
+                                  "text": { "type": "string" },
+                                  "directionOfDirection": { "type": "string" }
+                                }
+                              }
+                            },
+                            "observation": { "type": "string" },
+                            "warning": {
+                              "type": "object",
+                              "properties": {
+                                "title": { "type": "string" },
+                                "body": { "type": "string" },
+                                "consequence": { "type": "string" }
+                              }
+                            }
+                          }
+                        },
+                        "logic": {
+                          "type": "object",
+                          "properties": {
+                            "title": { "type": "string" },
+                            "subtitle": { "type": "string" },
+                            "analogy": { "type": "string" },
+                            "error": { "type": "string" },
+                            "errorConsequence": { "type": "string" },
+                            "fix": { "type": "string" },
+                            "wildcard": { "type": "string" }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "verify": {
+      "type": "object",
+      "description": "Post-execution verification. Pass/fail tests.",
+      "required": ["tests"],
+      "properties": {
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "method", "pass", "fail"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "method": { "type": "string" },
+              "directionOfDirection": { "type": "string" },
+              "toolRequired": { "type": "string" },
+              "toolMaterialId": { "type": "string" },
+              "pass": {
+                "type": "object",
+                "required": ["description"],
+                "properties": {
+                  "description": { "type": "string" },
+                  "exactValue": { "type": "string" },
+                  "tolerance": { "type": "string" },
+                  "referenceComparison": { "type": "string" }
+                }
+              },
+              "fail": {
+                "type": "object",
+                "required": ["description", "recovery"],
+                "properties": {
+                  "description": { "type": "string" },
+                  "referenceComparison": { "type": "string" },
+                  "consequence": { "type": "string" },
+                  "batchSalvageable": { "type": "boolean" },
+                  "recovery": {
+                    "oneOf": [
+                      { "type": "string" },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": ["step", "action"],
+                          "properties": {
+                            "step": { "type": "integer" },
+                            "action": { "type": "string" },
+                            "directionOfDirection": { "type": "string" }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "shutdown": {
+      "type": "object",
+      "description": "Normal safe teardown sequence.",
+      "required": ["steps"],
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "action", "observation"],
+            "properties": {
+              "id": { "type": "string" },
+              "completed": { "type": "boolean", "default": false },
+              "action": { "type": "string" },
+              "directionOfDirection": { "type": "string" },
+              "tool": { "type": "string" },
+              "observation": { "type": "string" },
+              "consequence": { "type": "string" },
+              "gate": {
+                "type": "object",
+                "properties": {
+                  "condition": { "type": "string" },
+                  "checkMethod": { "type": "string", "enum": ["instrument", "sensory", "timed", "calculated"] },
+                  "howToCheck": { "type": "string" },
+                  "fail": { "type": "string" }
+                }
+              },
+              "alerts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["level", "message"],
+                  "properties": {
+                    "level": { "type": "string", "enum": ["red", "yellow", "green"] },
+                    "title": { "type": "string" },
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "finalDisposal": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["wasteType", "classification", "method"],
+            "properties": {
+              "wasteType": { "type": "string" },
+              "classification": { "type": "string" },
+              "method": { "type": "string" },
+              "cannotMixWith": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "emergencyShutdown": {
+      "type": "object",
+      "description": "PANIC MODE. Tape-to-door. No branching, no thinking. Verb -> Target -> Do it.",
+      "required": ["steps"],
+      "properties": {
+        "triggerConditions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "steps": {
+          "type": "array",
+          "description": "Ordered, numbered, no branching. Executable under panic.",
+          "items": {
+            "type": "object",
+            "required": ["id", "verb", "target"],
+            "properties": {
+              "id": { "type": "string" },
+              "verb": { "type": "string", "description": "Single word: CLOSE, OPEN, CUT, EXIT, CALL" },
+              "target": { "type": "string", "description": "What to act on." },
+              "detail": { "type": "string" },
+              "physicalLocation": { "type": "string", "description": "Where this valve/switch/breaker is." }
+            }
+          }
+        },
+        "postEvacuation": {
+          "type": "object",
+          "properties": {
+            "waitTime": { "type": "string" },
+            "reentryCondition": { "type": "string" },
+            "contactInfo": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "maintenance": {
+      "type": "object",
+      "description": "Recurring upkeep between runs.",
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["item", "task", "frequency"],
+            "properties": {
+              "item": { "type": "string" },
+              "materialId": { "type": "string" },
+              "task": { "type": "string" },
+              "directionOfDirection": { "type": "string" },
+              "frequency": { "type": "string" },
+              "consequence": { "type": "string" },
+              "degradationSign": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
