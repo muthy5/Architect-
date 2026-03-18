@@ -32,6 +32,7 @@ from engine import (
     OperationalBrain,
     TechnicalAtom,
     clear_extraction_cache,
+    estimate_pipeline_cost,
     split_text,
     usage_stats,
 )
@@ -971,6 +972,28 @@ with tab_extract:
             )
             st.markdown(f"- `{f.name}` ({f.size:,} bytes){size_note}")
 
+        # ── Pre-run cost / time estimate ──
+        _forensic_texts = {}
+        for f in uploaded_files:
+            f.seek(0)
+            try:
+                _forensic_texts[f.name] = f.read().decode("utf-8", errors="replace")
+            except Exception:
+                _forensic_texts[f.name] = ""
+            f.seek(0)
+        if _forensic_texts:
+            f_est = estimate_pipeline_cost(
+                _forensic_texts,
+                provider=provider.lower(),
+                tier=cost_tier,
+                pipeline="forensic",
+                model_override=model_override or None,
+            )
+            fc1, fc2, fc3 = st.columns(3)
+            fc1.metric("Est. API Calls", f_est["api_calls"])
+            fc2.metric("Est. Time", f_est["time_display"])
+            fc3.metric("Est. Cost", f"${f_est['cost_usd']:.3f}")
+
         run_extraction = st.button("\U0001f52c Run Forensic Extraction", use_container_width=True)
 
         if run_extraction:
@@ -1645,6 +1668,23 @@ with tab_v3:
             placeholder="e.g. Synthesize aspirin from salicylic acid and acetic anhydride.",
         )
 
+        # ── Pre-run cost / time estimate ──
+        if v3_file_texts:
+            est = estimate_pipeline_cost(
+                v3_file_texts,
+                provider=provider.lower(),
+                tier=cost_tier,
+                pipeline="layman_v3",
+                model_override=model_override or None,
+            )
+            est_cols = st.columns(4)
+            est_cols[0].metric("Est. API Calls", est["api_calls"])
+            est_cols[1].metric("Est. Time", est["time_display"])
+            est_cols[2].metric("Est. Cost", f"${est['cost_usd']:.3f}")
+            est_cols[3].metric("Model", est["model"].split("-")[0].title())
+            for warn in est.get("warnings", []):
+                st.warning(warn)
+
         if st.button(
             "Generate Layman Doc v3",
             use_container_width=True,
@@ -1653,11 +1693,6 @@ with tab_v3:
             if not api_key:
                 st.error("Please enter your API key in the sidebar.")
             else:
-                combined_text = "\n\n---\n\n".join(
-                    f"[Source: {fname}]\n{txt}" for fname, txt in v3_file_texts.items()
-                )
-                combined_name = ", ".join(v3_file_texts.keys())
-
                 brain = LaymanV3Brain(
                     provider=provider.lower(),
                     api_key=api_key,
@@ -1665,23 +1700,45 @@ with tab_v3:
                     tier=cost_tier,
                 )
 
-                with st.spinner("Extracting v3 layman procedural document\u2026"):
-                    try:
-                        raw_doc = brain.extract_v3(combined_text, combined_name)
-                        # Inject user-provided title/objective if supplied
-                        if v3_title:
-                            raw_doc.setdefault("meta", {})["title"] = v3_title
-                        if v3_objective:
-                            raw_doc.setdefault("meta", {})["objective"] = v3_objective
-                        report = validate_v3_document(raw_doc)
-                        fixed_doc = fix_v3_document(raw_doc, report)
-                        # Re-validate after fix
-                        report = validate_v3_document(fixed_doc)
-                        st.session_state["v3_document"] = fixed_doc
-                        st.session_state["v3_validation_report"] = report
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Extraction failed: {exc}")
+                n_files = len(v3_file_texts)
+                progress = st.progress(0, text="Starting Layman v3 extraction\u2026")
+                status_area = st.empty()
+
+                def _v3_progress(idx: int, total: int, fname: str):
+                    pct = int((idx / total) * 100)
+                    progress.progress(pct, text=f"[{idx + 1}/{total}] Processing `{fname}`\u2026")
+                    status_area.markdown(
+                        f"<small style='color:#4a90d9;'>Extracting v3 from {fname}\u2026 "
+                        f"(this may take a few minutes for large files)</small>",
+                        unsafe_allow_html=True,
+                    )
+
+                try:
+                    raw_doc = brain.extract_multi_documents(
+                        v3_file_texts,
+                        progress_callback=_v3_progress,
+                    )
+                    progress.progress(100, text="Extraction complete.")
+                    status_area.markdown(
+                        "<small style='color:#6ee7b7;'>\u2713 Extraction complete</small>",
+                        unsafe_allow_html=True,
+                    )
+
+                    # Inject user-provided title/objective if supplied
+                    if v3_title:
+                        raw_doc.setdefault("meta", {})["title"] = v3_title
+                    if v3_objective:
+                        raw_doc.setdefault("meta", {})["objective"] = v3_objective
+                    report = validate_v3_document(raw_doc)
+                    fixed_doc = fix_v3_document(raw_doc, report)
+                    # Re-validate after fix
+                    report = validate_v3_document(fixed_doc)
+                    st.session_state["v3_document"] = fixed_doc
+                    st.session_state["v3_validation_report"] = report
+                    st.rerun()
+                except Exception as exc:
+                    progress.progress(100, text="Extraction failed.")
+                    st.error(f"Extraction failed: {exc}")
 
         # ── Display results ──
         v3_doc: dict | None = st.session_state.get("v3_document")

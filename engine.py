@@ -643,6 +643,137 @@ class UsageStats:
 usage_stats = UsageStats()
 
 
+# ---------------------------------------------------------------------------
+# Pre-run cost & time estimation
+# ---------------------------------------------------------------------------
+
+# Approximate generation speed in tokens/second (conservative estimates)
+_TOKENS_PER_SECOND = {
+    "claude-sonnet-4-20250514": 40,
+    "claude-haiku-4-5-20251001": 80,
+    "gpt-4o": 50,
+    "gpt-4o-mini": 100,
+}
+
+
+def estimate_pipeline_cost(
+    file_texts: dict[str, str],
+    provider: str,
+    tier: str,
+    pipeline: str = "forensic",
+    model_override: str | None = None,
+) -> dict[str, Any]:
+    """Estimate cost, time, and API calls before running a pipeline.
+
+    Args:
+        file_texts: Mapping of filename -> document text.
+        provider: "anthropic" or "openai".
+        tier: "quality", "balanced", or "economy".
+        pipeline: "forensic" or "layman_v3".
+        model_override: Optional explicit model name.
+
+    Returns dict with keys: api_calls, input_tokens, output_tokens,
+    cost_usd, time_seconds, warnings.
+    """
+    resolved_model = model_override or get_tier_model(provider, tier)
+    pricing = UsageStats.PRICING.get(resolved_model, {"input": 3.0, "output": 15.0})
+    tps = _TOKENS_PER_SECOND.get(resolved_model, 40)
+
+    total_input = 0
+    total_output = 0
+    api_calls = 0
+    warnings: list[str] = []
+
+    if pipeline == "forensic":
+        # Forensic processes each file independently
+        system_prompt_tokens = 250  # small system prompt
+        for fname, text in file_texts.items():
+            chunks = split_text(text)
+            for chunk in chunks:
+                text_tokens = len(chunk) // 4
+                input_tokens = text_tokens + system_prompt_tokens
+                output_tokens = estimate_max_tokens(len(chunk))
+                total_input += input_tokens
+                total_output += output_tokens
+                api_calls += 1
+
+    elif pipeline == "layman_v3":
+        # Layman v3 processes each file independently (after fix), each
+        # file chunked with layman-aware chunk size
+        system_prompt_tokens = 10_000  # large schema prompt
+        layman_chunk = 30_000  # LAYMAN_CHUNK_CHARS
+        for fname, text in file_texts.items():
+            chunks = split_text(text, max_chars=layman_chunk)
+            for chunk in chunks:
+                text_tokens = len(chunk) // 4
+                input_tokens = text_tokens + system_prompt_tokens
+                output_tokens = min(16384, max(4096, len(chunk) // 3))
+                total_input += input_tokens
+                total_output += output_tokens
+                api_calls += 1
+
+            # If multi-chunk, add a merge pass
+            if len(chunks) > 1:
+                merge_input = system_prompt_tokens + total_output
+                merge_output = min(16384, total_output)
+                total_input += merge_input
+                total_output += merge_output
+                api_calls += 1
+
+        # Multi-doc merge pass (programmatic, no extra API call)
+        if len(file_texts) > 1:
+            warnings.append(
+                "Multiple documents will be processed independently "
+                "and merged programmatically."
+            )
+
+    time_seconds = total_output / tps + api_calls * 5  # 5s overhead per call
+    cost_usd = (
+        total_input * pricing["input"] / 1_000_000
+        + total_output * pricing["output"] / 1_000_000
+    )
+
+    if time_seconds > 120:
+        warnings.append(
+            f"Estimated time is {time_seconds / 60:.1f} minutes. "
+            f"Large documents may take a while."
+        )
+    if cost_usd > 0.50:
+        warnings.append(f"Estimated cost is ${cost_usd:.2f}.")
+
+    return {
+        "api_calls": api_calls,
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "cost_usd": round(cost_usd, 4),
+        "time_seconds": round(time_seconds),
+        "time_display": _format_time(time_seconds),
+        "model": resolved_model,
+        "warnings": warnings,
+    }
+
+
+def _format_time(seconds: float) -> str:
+    """Format seconds into a human-readable string."""
+    if seconds < 60:
+        return f"~{int(seconds)}s"
+    minutes = seconds / 60
+    if minutes < 2:
+        return f"~{minutes:.1f} min"
+    return f"~{int(minutes)} min"
+
+
+def _compute_timeout(max_tokens: int) -> float:
+    """Compute a dynamic timeout based on the requested output tokens.
+
+    At ~40 tokens/sec (conservative for large structured output), we need
+    roughly max_tokens / 40 seconds plus a generous buffer for input
+    processing and network latency.
+    """
+    generation_time = max_tokens / 40.0
+    return max(120.0, generation_time + 60.0)
+
+
 def _call_anthropic(
     prompt: str,
     system: str,
@@ -657,14 +788,17 @@ def _call_anthropic(
     if not api_key or not api_key.strip():
         raise ValueError("Anthropic API key is missing or empty")
 
-    client = anthropic.Anthropic(
-        api_key=api_key,
-        timeout=120.0,  # 2-minute timeout to avoid indefinite hangs
-    )
-    # Use prompt caching: mark the system prompt as cacheable so it's
-    # reused across multiple file extractions in the same session.
+    timeout = _compute_timeout(max_tokens)
+    client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
+
+    # Use streaming to avoid idle-timeout kills on large outputs.
+    # The stream keeps the connection alive as tokens arrive.
     try:
-        resp = client.messages.create(
+        collected_text: list[str] = []
+        input_tok = 0
+        output_tok = 0
+
+        with client.messages.stream(
             model=model,
             max_tokens=max_tokens,
             system=[
@@ -675,26 +809,32 @@ def _call_anthropic(
                 }
             ],
             messages=[{"role": "user", "content": prompt}],
-        )
+        ) as stream:
+            for text in stream.text_stream:
+                collected_text.append(text)
+
+            # Get final message for usage stats
+            final = stream.get_final_message()
+            if hasattr(final, "usage") and final.usage:
+                input_tok = getattr(final.usage, "input_tokens", 0)
+                output_tok = getattr(final.usage, "output_tokens", 0)
+
     except anthropic.APITimeoutError:
         raise TimeoutError(
-            f"Anthropic API timed out after 120s. "
+            f"Anthropic API timed out after {timeout:.0f}s. "
             f"Model: {model}, prompt length: {len(prompt)} chars"
         )
     except anthropic.BadRequestError as e:
-        # Re-raise with a more descriptive message, especially for empty-body 400s
         detail = str(e) if str(e) else "Bad Request"
         raise RuntimeError(
             f"Anthropic API 400 Bad Request: {detail}. "
             f"Model: {model}, prompt length: {len(prompt)} chars, "
             f"max_tokens: {max_tokens}"
         ) from e
-    # Track token usage
-    if hasattr(resp, "usage") and resp.usage:
-        input_tok = getattr(resp.usage, "input_tokens", 0)
-        output_tok = getattr(resp.usage, "output_tokens", 0)
+
+    if input_tok or output_tok:
         usage_stats.record(model, input_tok, output_tok)
-    return resp.content[0].text
+    return "".join(collected_text)
 
 
 def _call_openai(
@@ -711,19 +851,37 @@ def _call_openai(
     if not api_key or not api_key.strip():
         raise ValueError("OpenAI API key is missing or empty")
 
-    client = openai.OpenAI(api_key=api_key, timeout=120.0)
+    timeout = _compute_timeout(max_tokens)
+    client = openai.OpenAI(api_key=api_key, timeout=timeout)
+
+    # Use streaming to avoid idle-timeout kills on large outputs.
     try:
-        resp = client.chat.completions.create(
+        collected_text: list[str] = []
+
+        stream = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
+            stream=True,
+            stream_options={"include_usage": True},
         )
+
+        input_tok = 0
+        output_tok = 0
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                collected_text.append(chunk.choices[0].delta.content)
+            # Final chunk carries usage stats
+            if hasattr(chunk, "usage") and chunk.usage:
+                input_tok = getattr(chunk.usage, "prompt_tokens", 0)
+                output_tok = getattr(chunk.usage, "completion_tokens", 0)
+
     except openai.APITimeoutError:
         raise TimeoutError(
-            f"OpenAI API timed out after 120s. "
+            f"OpenAI API timed out after {timeout:.0f}s. "
             f"Model: {model}, prompt length: {len(prompt)} chars"
         )
     except openai.BadRequestError as e:
@@ -733,12 +891,10 @@ def _call_openai(
             f"Model: {model}, prompt length: {len(prompt)} chars, "
             f"max_tokens: {max_tokens}"
         ) from e
-    # Track token usage
-    if hasattr(resp, "usage") and resp.usage:
-        input_tok = getattr(resp.usage, "prompt_tokens", 0)
-        output_tok = getattr(resp.usage, "completion_tokens", 0)
+
+    if input_tok or output_tok:
         usage_stats.record(model, input_tok, output_tok)
-    return resp.choices[0].message.content
+    return "".join(collected_text)
 
 
 def call_llm(
@@ -788,8 +944,11 @@ def call_llm(
         return (p, s, m, k, mt), kwargs
 
     def _longer_timeout(args, kwargs, error):
-        """No-op handler — the retry itself gives the API another chance."""
-        return args, kwargs
+        """Reduce max_tokens by 40% so the request can finish faster."""
+        p, s, m, k, mt = args
+        reduced = max(4096, int(mt * 0.6))
+        log.info("Reducing max_tokens from %d to %d after timeout", mt, reduced)
+        return (p, s, m, k, reduced), kwargs
 
     recovery_handlers = {
         "reduce_input_size": _reduce_input,
@@ -802,7 +961,7 @@ def call_llm(
         fn,
         prompt, system, resolved_model, api_key, max_tokens,
         context=context,
-        max_retries=3,
+        max_retries=1,
         recovery_handlers=recovery_handlers,
     )
 
