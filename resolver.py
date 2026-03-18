@@ -7,10 +7,14 @@ the same spec by the same name but with different values will always be caught.
 
 from __future__ import annotations
 
+import logging
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
 
 from engine import TechnicalAtom, normalise_category
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +143,20 @@ def apply_resolutions(
         if not c.resolved or not c.resolved_atom:
             continue
         resolved_by_key[c.key] = c.resolved_atom
+
+    # Warn about unresolved conflicts — these atoms will be dropped entirely
+    unresolved = [
+        c for c in resolution_state.conflicts
+        if not c.resolved or not c.resolved_atom
+    ]
+    if unresolved:
+        dropped_params = [c.short_label() for c in unresolved]
+        msg = (
+            f"{len(unresolved)} unresolved conflict(s) will cause atoms to be "
+            f"dropped from the exported taxonomy: {', '.join(dropped_params)}"
+        )
+        log.warning(msg)
+        warnings.warn(msg, stacklevel=2)
 
     result: dict[str, list[TechnicalAtom]] = {}
     seen_keys: set[str] = set()
