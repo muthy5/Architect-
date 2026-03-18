@@ -793,10 +793,18 @@ def _coerce_atom_fields(item: dict) -> dict:
             coerced["is_prerequisite"] = v.lower() in ("true", "1", "yes")
         else:
             coerced["is_prerequisite"] = bool(v)
+    # hoisted → bool
+    if "hoisted" in coerced:
+        v = coerced["hoisted"]
+        if isinstance(v, str):
+            coerced["hoisted"] = v.lower() in ("true", "1", "yes")
+        else:
+            coerced["hoisted"] = bool(v)
     # Strip unexpected keys that cause TypeError on construction
     valid_keys = {
         "category", "parameter", "value", "unit", "source_file",
         "page_or_section", "confidence", "notes", "is_prerequisite",
+        "hoisted",
     }
     coerced = {k: v for k, v in coerced.items() if k in valid_keys}
     return coerced
@@ -906,10 +914,14 @@ class OperationalBrain:
                 diag.llm_call_error = f"{type(e).__name__}: {e}"
             raise
 
-        # Cache the raw response for future re-uploads
-        set_cached_extraction(text, filename, self.provider, effective_model, raw)
+        atoms = self._parse_atoms(raw, filename, diag)
 
-        return self._parse_atoms(raw, filename, diag)
+        # Only cache responses that actually produced atoms — avoids
+        # poisoning the cache with refusals or malformed LLM output.
+        if atoms:
+            set_cached_extraction(text, filename, self.provider, effective_model, raw)
+
+        return atoms
 
     def organize_by_taxonomy(
         self, atoms: list[TechnicalAtom]
@@ -969,9 +981,19 @@ class OperationalBrain:
             return c.strip("`").strip()
 
         def _clean_level_1(text: str) -> str:
-            """Extract JSON array via regex."""
-            match = re.search(r"\[.*\]", text, re.DOTALL)
-            return match.group() if match else text
+            """Extract JSON array via bracket-counting."""
+            start = text.find("[")
+            if start == -1:
+                return text
+            depth = 0
+            for i in range(start, len(text)):
+                if text[i] == "[":
+                    depth += 1
+                elif text[i] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start : i + 1]
+            return text
 
         def _clean_level_2(text: str) -> str:
             """Aggressive: fix common LLM JSON mistakes."""
@@ -991,7 +1013,9 @@ class OperationalBrain:
             objects = re.findall(r"\{[^{}]*\}", text, re.DOTALL)
             if objects:
                 return "[" + ",".join(objects) + "]"
-            return "[]"
+            # Return original text so the parse fails honestly rather than
+            # silently producing an empty array that masks LLM refusals.
+            return text
 
         cleaners = [_clean_level_0, _clean_level_1, _clean_level_2, _clean_level_3]
 
