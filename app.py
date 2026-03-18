@@ -169,6 +169,17 @@ with st.sidebar:
         type="password",
         placeholder="sk-ant-... or sk-...",
     )
+
+    # ── Early API-key validation ──
+    if api_key:
+        _key_ok = True
+        if provider == "Anthropic" and not api_key.startswith("sk-ant-"):
+            st.warning("Anthropic keys typically start with `sk-ant-`. Double-check your key.")
+            _key_ok = False
+        elif provider == "OpenAI" and not api_key.startswith("sk-"):
+            st.warning("OpenAI keys typically start with `sk-`. Double-check your key.")
+            _key_ok = False
+
     model_override = st.text_input(
         "Model (optional)",
         placeholder="claude-sonnet-4-20250514",
@@ -456,29 +467,83 @@ with tab_extract:
                     model=model_override or None,
                 )
 
+                n_files = len(uploaded_files)
                 progress = st.progress(0, text="Starting extraction\u2026")
-                status = st.empty()
+                status_area = st.empty()
+                failed_files: List[str] = []
 
                 for i, uf in enumerate(uploaded_files):
-                    pct = int((i / len(uploaded_files)) * 100)
-                    progress.progress(pct, text=f"Extracting `{uf.name}`\u2026")
-                    status.markdown(
-                        f"<small style='color:#4a90d9;'>Processing {uf.name}\u2026</small>",
+                    # Progress: show file N/M and a sub-step
+                    base_pct = int((i / n_files) * 100)
+                    progress.progress(base_pct, text=f"[{i+1}/{n_files}] Reading `{uf.name}`\u2026")
+                    status_area.markdown(
+                        f"<small style='color:#4a90d9;'>Reading {uf.name}\u2026</small>",
                         unsafe_allow_html=True,
                     )
                     try:
                         text = read_file(uf)
+                        if text.startswith("[PDF read error"):
+                            st.warning(f"Could not read `{uf.name}`. It may be a scanned/image-only PDF.")
+                            failed_files.append(uf.name)
+                            continue
+                        if len(text.strip()) < 20:
+                            st.warning(f"`{uf.name}` appears to be empty or too short to extract from.")
+                            failed_files.append(uf.name)
+                            continue
                         file_texts[uf.name] = text
-                        atoms = brain.extract_atoms(text, uf.name)
-                        all_atoms.extend(atoms)
-                        status.markdown(
-                            f"<small style='color:#6ee7b7;'>\u2713 {uf.name} \u2192 {len(atoms)} atoms</small>",
+
+                        # Sub-step: extraction via LLM
+                        mid_pct = int(((i + 0.5) / n_files) * 100)
+                        progress.progress(mid_pct, text=f"[{i+1}/{n_files}] Extracting specs from `{uf.name}`\u2026")
+                        status_area.markdown(
+                            f"<small style='color:#4a90d9;'>Calling LLM for {uf.name}\u2026 (this may take a moment)</small>",
                             unsafe_allow_html=True,
                         )
+
+                        atoms = brain.extract_atoms(text, uf.name)
+                        all_atoms.extend(atoms)
+
+                        if len(atoms) == 0:
+                            status_area.markdown(
+                                f"<small style='color:#f59e0b;'>\u26a0 {uf.name} \u2192 0 atoms extracted. "
+                                f"The document may not contain recognisable technical specifications.</small>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            status_area.markdown(
+                                f"<small style='color:#6ee7b7;'>\u2713 {uf.name} \u2192 {len(atoms)} atoms</small>",
+                                unsafe_allow_html=True,
+                            )
                     except Exception as e:
-                        st.error(f"Error processing `{uf.name}`: {e}")
+                        failed_files.append(uf.name)
+                        err_msg = str(e)
+                        # Translate common API errors into user-friendly messages
+                        if "authentication" in err_msg.lower() or "401" in err_msg:
+                            st.error(f"`{uf.name}`: API key is invalid or expired. Check your key in the sidebar.")
+                        elif "rate" in err_msg.lower() or "429" in err_msg:
+                            st.error(f"`{uf.name}`: API rate limit hit. Wait a moment and try again.")
+                        elif "overloaded" in err_msg.lower() or "503" in err_msg:
+                            st.error(f"`{uf.name}`: The AI service is temporarily overloaded. Try again shortly.")
+                        elif "timeout" in err_msg.lower():
+                            st.error(f"`{uf.name}`: Request timed out. The document may be too large — try splitting it.")
+                        else:
+                            st.error(f"Error processing `{uf.name}`: {err_msg}")
 
                 progress.progress(100, text="Extraction complete.")
+
+                # Summary diagnostics
+                if failed_files:
+                    st.warning(
+                        f"{len(failed_files)} file(s) could not be processed: "
+                        + ", ".join(f"`{f}`" for f in failed_files)
+                        + ". Successfully extracted from the remaining files."
+                    )
+                if len(all_atoms) == 0 and not failed_files:
+                    st.warning(
+                        "No technical specifications were extracted from any file. "
+                        "This can happen if the documents don't contain structured technical data, "
+                        "or if the LLM couldn't parse them. Try uploading clearer source documents."
+                    )
 
                 taxonomy = brain.organize_by_taxonomy(all_atoms)
                 resolution_state = detect_conflicts(all_atoms)
@@ -591,6 +656,16 @@ with tab_resolve:
         st.markdown("---")
         all_done = rs.all_resolved
         if all_done:
+            # Show a summary of chosen resolutions before finalizing
+            st.markdown("**Resolution summary** — review before finalizing:")
+            for c in rs.conflicts:
+                if c.resolved_atom:
+                    st.markdown(
+                        f"- **{c.parameter}** ({c.category}): "
+                        f"using value from `{c.resolved_atom.source_file}` "
+                        f"— _{c.resolved_atom.value[:80]}{'…' if len(c.resolved_atom.value) > 80 else ''}_"
+                    )
+            st.markdown("")
             if st.button("\u2705 Finalize Resolutions & Build MPR", use_container_width=True):
                 resolved = apply_resolutions(st.session_state["taxonomy"], rs)
                 st.session_state["resolved_taxonomy"] = resolved
