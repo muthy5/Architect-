@@ -130,16 +130,16 @@ def apply_resolutions(
     Non-conflicting atoms are kept as-is. For each resolved conflict the
     winning atom replaces all members of that conflict group.
     """
-    # Build lookup of conflict atom ids → resolved atom
-    conflict_atom_ids: set[int] = set()
+    # Build lookup of conflict keys → resolved atom
+    conflict_keys: set[str] = set()
     resolved_by_key: dict[str, TechnicalAtom] = {}
 
     for c in resolution_state.conflicts:
+        for a in c.atoms:
+            conflict_keys.add(a.conflict_key())
         if not c.resolved or not c.resolved_atom:
             continue
         resolved_by_key[c.key] = c.resolved_atom
-        for a in c.atoms:
-            conflict_atom_ids.add(id(a))
 
     result: Dict[str, List[TechnicalAtom]] = {}
     seen_keys: set[str] = set()
@@ -147,9 +147,8 @@ def apply_resolutions(
     for section, atoms in taxonomy.items():
         new_atoms: list[TechnicalAtom] = []
         for atom in atoms:
-            if id(atom) in conflict_atom_ids:
-                key = atom.conflict_key()
-                ckey = f"{normalise_category(atom.category).value}||{atom.parameter.strip().lower()}"
+            ckey = atom.conflict_key()
+            if ckey in conflict_keys:
                 if ckey in resolved_by_key and ckey not in seen_keys:
                     new_atoms.append(resolved_by_key[ckey])
                     seen_keys.add(ckey)

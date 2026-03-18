@@ -11,7 +11,6 @@ import hashlib
 import json
 import logging
 import re
-import time
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -242,9 +241,10 @@ def normalise_category(raw: str) -> TaxonomyCategory:
     # Alias lookup
     if key in ALIAS_MAP:
         return ALIAS_MAP[key]
-    # Fuzzy: check if any alias is a substring
+    # Fuzzy: check if a multi-word alias appears in the key
+    # Only match aliases with 4+ chars to avoid false positives from short aliases
     for alias, cat in ALIAS_MAP.items():
-        if alias in key or key in alias:
+        if len(alias) >= 4 and alias in key:
             return cat
     # Fallback — return Documentation & References as catch-all
     return TaxonomyCategory.DOCUMENTATION_REFERENCES
@@ -307,9 +307,6 @@ class TechnicalAtom(BaseModel):
 # ---------------------------------------------------------------------------
 # LLM client helpers — provider-agnostic
 # ---------------------------------------------------------------------------
-
-MAX_RETRIES = 3
-RETRY_BACKOFF = [2, 4, 8]  # seconds
 
 # ---------------------------------------------------------------------------
 # Cost tiers — model recommendations per provider
@@ -423,28 +420,6 @@ class UsageStats:
 
 # Global session stats instance
 usage_stats = UsageStats()
-
-
-def _retry_on_transient(fn, *args, **kwargs) -> str:
-    """Retry a callable on transient network / rate-limit errors with backoff."""
-    last_err = None
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            return fn(*args, **kwargs)
-        except Exception as exc:
-            last_err = exc
-            err_str = str(exc).lower()
-            is_transient = any(
-                t in err_str
-                for t in ("rate", "timeout", "overloaded", "503", "529", "connection")
-            )
-            if not is_transient or attempt >= MAX_RETRIES:
-                raise
-            wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
-            log.warning("Transient LLM error (attempt %d/%d), retrying in %ds: %s",
-                        attempt + 1, MAX_RETRIES, wait, exc)
-            time.sleep(wait)
-    raise last_err  # type: ignore[misc]
 
 
 def _call_anthropic(
@@ -714,8 +689,10 @@ class OperationalBrain:
             c = _clean_level_1(text)
             # Fix trailing commas before ] or }
             c = re.sub(r",\s*([}\]])", r"\1", c)
-            # Fix single quotes -> double quotes
-            c = c.replace("'", '"')
+            # Fix single-quoted JSON keys/values (only structural quotes, not apostrophes)
+            # Matches patterns like {'key': 'value'} but not contractions like "don't"
+            c = re.sub(r"(?<=[\[{,:])\s*'", ' "', c)
+            c = re.sub(r"'\s*(?=[,\]}:])", '"', c)
             # Remove control characters
             c = re.sub(r"[\x00-\x1f\x7f]", " ", c)
             return c
