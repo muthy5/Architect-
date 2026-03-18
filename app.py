@@ -31,8 +31,10 @@ from resolver import (
     Conflict,
     ResolutionState,
     apply_resolutions,
+    deduplicate_atoms,
     detect_conflicts,
     flatten_taxonomy,
+    infer_material_groups,
     resolve_conflict,
 )
 from self_healer import get_healer
@@ -183,6 +185,27 @@ st.markdown(
         border-radius: 4px; padding: 1px 6px;
         font-size: 0.65rem; font-weight: 700;
         white-space: nowrap;
+    }
+    .material-group-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 0 0.25rem 0;
+        margin-top: 0.5rem;
+        border-top: 1px solid #2d3346;
+        color: #f59e0b;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+    }
+    .material-group-header:first-child {
+        margin-top: 0;
+        border-top: none;
+    }
+    .material-group-count {
+        color: #6b7280;
+        font-size: 0.68rem;
+        font-weight: 400;
     }
 
     /* ── Gap audit ───────────────────── */
@@ -472,6 +495,31 @@ def _atom_html(atom: TechnicalAtom) -> str:
     )
 
 
+def _group_atoms_by_material(atoms: list[TechnicalAtom]) -> list[tuple[str | None, list[TechnicalAtom]]]:
+    """Group atoms by material_group, preserving order.
+
+    Returns a list of (group_name, atoms) tuples. Ungrouped atoms have
+    group_name=None and appear first.
+    """
+    from collections import OrderedDict
+
+    ungrouped: list[TechnicalAtom] = []
+    groups: OrderedDict[str, list[TechnicalAtom]] = OrderedDict()
+
+    for atom in atoms:
+        if atom.material_group:
+            groups.setdefault(atom.material_group, []).append(atom)
+        else:
+            ungrouped.append(atom)
+
+    result: list[tuple[str | None, list[TechnicalAtom]]] = []
+    if ungrouped:
+        result.append((None, ungrouped))
+    for name, group_atoms in groups.items():
+        result.append((name, group_atoms))
+    return result
+
+
 def render_taxonomy(taxonomy: dict[str, list[TechnicalAtom]]) -> None:
     for section in TAXONOMY_SECTIONS:
         atoms = taxonomy.get(section, [])
@@ -484,11 +532,21 @@ def render_taxonomy(taxonomy: dict[str, list[TechnicalAtom]]) -> None:
                     unsafe_allow_html=True,
                 )
             else:
-                html = '<div class="mpr-card">'
-                for atom in atoms:
-                    html += _atom_html(atom)
-                html += "</div>"
-                st.markdown(html, unsafe_allow_html=True)
+                groups = _group_atoms_by_material(atoms)
+                rendered = '<div class="mpr-card">'
+                for group_name, group_atoms in groups:
+                    if group_name:
+                        safe_name = html.escape(group_name)
+                        rendered += (
+                            f'<div class="material-group-header">'
+                            f'{safe_name}'
+                            f'<span class="material-group-count">'
+                            f'{len(group_atoms)} properties</span></div>'
+                        )
+                    for atom in group_atoms:
+                        rendered += _atom_html(atom)
+                rendered += "</div>"
+                st.markdown(rendered, unsafe_allow_html=True)
 
 
 def render_gap_audit(taxonomy: dict[str, list[TechnicalAtom]]) -> None:
@@ -536,13 +594,17 @@ def build_markdown(taxonomy: dict[str, list[TechnicalAtom]], title: str) -> str:
         if not atoms:
             lines.append("*No data extracted for this section.*")
         else:
-            for atom in atoms:
-                prereq = " `[PREREQ]`" if atom.is_prerequisite else ""
-                hoisted = " `[HOISTED]`" if atom.hoisted else ""
-                lines.append(
-                    f"- **{atom.parameter}**: {atom.value}{prereq}{hoisted}  "
-                    f"*(source: {atom.source_file})*"
-                )
+            groups = _group_atoms_by_material(atoms)
+            for group_name, group_atoms in groups:
+                if group_name:
+                    lines.append(f"\n### {group_name}")
+                for atom in group_atoms:
+                    prereq = " `[PREREQ]`" if atom.is_prerequisite else ""
+                    hoisted = " `[HOISTED]`" if atom.hoisted else ""
+                    lines.append(
+                        f"- **{atom.parameter}**: {atom.value}{prereq}{hoisted}  "
+                        f"*(source: {atom.source_file})*"
+                    )
         lines.append("")
     return "\n".join(lines)
 
@@ -598,35 +660,41 @@ def build_pdf(taxonomy: dict[str, list[TechnicalAtom]], title: str) -> bytes:
                 pdf.set_text_color(220, 38, 38)
                 pdf.cell(0, 5, "  [NO DATA \u2013 GAP IDENTIFIED]", new_x="LMARGIN", new_y="NEXT")
             else:
-                for atom in atoms:
-                    badges = ""
-                    if atom.is_prerequisite:
-                        badges += " [PREREQ]"
-                    if atom.hoisted:
-                        badges += " [HOISTED]"
-                    src = f"  (src: {atom.source_file})"
+                groups = _group_atoms_by_material(atoms)
+                for group_name, group_atoms in groups:
+                    if group_name:
+                        pdf.set_font("Helvetica", "B", 9)
+                        pdf.set_text_color(245, 158, 11)
+                        pdf.cell(0, 6, f"  {group_name}", new_x="LMARGIN", new_y="NEXT")
+                    for atom in group_atoms:
+                        badges = ""
+                        if atom.is_prerequisite:
+                            badges += " [PREREQ]"
+                        if atom.hoisted:
+                            badges += " [HOISTED]"
+                        src = f"  (src: {atom.source_file})"
 
-                    # Parameter
-                    pdf.set_font("Helvetica", "B", 8)
-                    pdf.set_text_color(125, 211, 252)
-                    param_text = f"  {atom.parameter}"
-                    pdf.multi_cell(55, 4.5, param_text, new_x="RIGHT", new_y="LAST")
+                        # Parameter
+                        pdf.set_font("Helvetica", "B", 8)
+                        pdf.set_text_color(125, 211, 252)
+                        param_text = f"  {atom.parameter}"
+                        pdf.multi_cell(55, 4.5, param_text, new_x="RIGHT", new_y="LAST")
 
-                    # Value
-                    pdf.set_font("Helvetica", "", 8)
-                    pdf.set_text_color(201, 209, 224)
-                    value_text = atom.value + badges
-                    # Wrap long values
-                    x_after_param = pdf.get_x()
-                    remaining_w = pdf.w - pdf.r_margin - x_after_param
-                    pdf.multi_cell(remaining_w - 28, 4.5, value_text, new_x="RIGHT", new_y="LAST")
+                        # Value
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(201, 209, 224)
+                        value_text = atom.value + badges
+                        # Wrap long values
+                        x_after_param = pdf.get_x()
+                        remaining_w = pdf.w - pdf.r_margin - x_after_param
+                        pdf.multi_cell(remaining_w - 28, 4.5, value_text, new_x="RIGHT", new_y="LAST")
 
-                    # Source
-                    pdf.set_font("Helvetica", "I", 7)
-                    pdf.set_text_color(74, 85, 104)
-                    pdf.multi_cell(28, 4.5, src, new_x="LMARGIN", new_y="NEXT")
-                    pdf.set_draw_color(26, 30, 42)
-                    pdf.line(14, pdf.get_y(), pdf.w - 14, pdf.get_y())
+                        # Source
+                        pdf.set_font("Helvetica", "I", 7)
+                        pdf.set_text_color(74, 85, 104)
+                        pdf.multi_cell(28, 4.5, src, new_x="LMARGIN", new_y="NEXT")
+                        pdf.set_draw_color(26, 30, 42)
+                        pdf.line(14, pdf.get_y(), pdf.w - 14, pdf.get_y())
 
             pdf.ln(3)
 
@@ -879,9 +947,16 @@ with tab_extract:
                             f"Tokens: {stats['input_tokens']:,} in / {stats['output_tokens']:,} out"
                         )
 
+                # Deduplicate exact-match atoms across files and infer groups
+                pre_dedup_count = len(all_atoms)
+                all_atoms = deduplicate_atoms(all_atoms)
+                all_atoms = infer_material_groups(all_atoms)
+                dedup_removed = pre_dedup_count - len(all_atoms)
+
                 taxonomy = brain.organize_by_taxonomy(all_atoms)
                 resolution_state = detect_conflicts(all_atoms)
 
+                st.session_state["dedup_removed"] = dedup_removed
                 st.session_state["raw_atoms"] = all_atoms
                 st.session_state["taxonomy"] = taxonomy
                 st.session_state["file_texts"] = file_texts
@@ -903,10 +978,12 @@ with tab_extract:
                 if st.session_state["resolution_state"]
                 else 0
             )
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Atoms Extracted", total)
+            dedup_removed = st.session_state.get("dedup_removed", 0)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Atoms", total)
             c2.metric("Files Processed", len(st.session_state["file_texts"]))
-            c3.metric("Conflicts Detected", conflicts, delta=None)
+            c3.metric("Duplicates Merged", dedup_removed)
+            c4.metric("Conflicts Detected", conflicts, delta=None)
 
             if conflicts > 0:
                 st.warning(

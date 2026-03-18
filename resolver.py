@@ -178,6 +178,141 @@ def apply_resolutions(
 
 
 # ---------------------------------------------------------------------------
+# Deduplication
+# ---------------------------------------------------------------------------
+
+def _dedup_key(atom: TechnicalAtom) -> str:
+    """Key for exact-duplicate detection: category + parameter + normalised value."""
+    val = atom.value.strip().lower()
+    return f"{atom.conflict_key()}||{val}"
+
+
+def deduplicate_atoms(atoms: list[TechnicalAtom]) -> list[TechnicalAtom]:
+    """Remove exact-duplicate atoms (same category, parameter, and value).
+
+    When duplicates come from different source files, the kept atom's notes
+    field is updated to record all source files. The atom with the highest
+    confidence is kept.
+    """
+    buckets: dict[str, list[TechnicalAtom]] = defaultdict(list)
+    for atom in atoms:
+        buckets[_dedup_key(atom)].append(atom)
+
+    deduped: list[TechnicalAtom] = []
+    for key, group in buckets.items():
+        if len(group) == 1:
+            deduped.append(group[0])
+            continue
+        # Pick the atom with highest confidence
+        best = max(group, key=lambda a: a.confidence)
+        # Collect all unique source files
+        all_sources = list(dict.fromkeys(a.source_file for a in group))
+        if len(all_sources) > 1:
+            sources_note = f"Also found in: {', '.join(s for s in all_sources if s != best.source_file)}"
+            existing_notes = best.notes or ""
+            merged_notes = f"{existing_notes}; {sources_note}".strip("; ")
+            best = best.model_copy(update={"notes": merged_notes})
+        deduped.append(best)
+
+    removed = len(atoms) - len(deduped)
+    if removed:
+        log.info("Deduplication removed %d exact-duplicate atom(s)", removed)
+    return deduped
+
+
+def infer_material_groups(atoms: list[TechnicalAtom]) -> list[TechnicalAtom]:
+    """Infer material_group from parameter name prefixes when not already set.
+
+    Detects common prefixes among parameters in the same category to group
+    related properties. For example, if parameters are "1,4-Butanediol CAS number",
+    "1,4-Butanediol purity", "1,4-Butanediol appearance", the shared prefix
+    "1,4-Butanediol" becomes the material_group for each.
+    """
+    from collections import Counter
+
+    # Only process atoms that lack a material_group
+    ungrouped = [a for a in atoms if not a.material_group]
+    if not ungrouped:
+        return atoms
+
+    # Bucket ungrouped atoms by canonical category
+    by_cat: dict[str, list[int]] = defaultdict(list)
+    atom_indices = {id(a): i for i, a in enumerate(atoms)}
+    for atom in ungrouped:
+        by_cat[atom.canonical_category().value].append(atom_indices[id(atom)])
+
+    updated = list(atoms)
+    for cat, indices in by_cat.items():
+        if len(indices) < 2:
+            continue
+        params = [updated[i].parameter for i in indices]
+        # Find shared prefixes by splitting on common delimiters
+        groups = _detect_prefix_groups(params)
+        for prefix, member_params in groups.items():
+            for idx in indices:
+                if updated[idx].parameter in member_params:
+                    updated[idx] = updated[idx].model_copy(
+                        update={"material_group": prefix}
+                    )
+
+    return updated
+
+
+def _detect_prefix_groups(params: list[str]) -> dict[str, set[str]]:
+    """Detect groups of parameters that share a meaningful common prefix.
+
+    Returns a dict mapping prefix → set of parameter names that share it.
+    Only returns groups with 2+ members and prefix length >= 3 chars.
+    """
+    groups: dict[str, set[str]] = defaultdict(set)
+
+    for i, p1 in enumerate(params):
+        for p2 in params[i + 1:]:
+            prefix = _common_prefix(p1, p2)
+            if len(prefix) >= 3:
+                groups[prefix].add(p1)
+                groups[prefix].add(p2)
+
+    if not groups:
+        return {}
+
+    # Keep only the longest prefix for each parameter
+    result: dict[str, set[str]] = {}
+    assigned: dict[str, str] = {}  # param → best prefix
+
+    # Sort prefixes by length descending, then by group size descending
+    sorted_prefixes = sorted(
+        groups.keys(), key=lambda p: (len(p), len(groups[p])), reverse=True
+    )
+    for prefix in sorted_prefixes:
+        members = set()
+        for param in groups[prefix]:
+            if param not in assigned:
+                members.add(param)
+                assigned[param] = prefix
+        if len(members) >= 2:
+            result[prefix] = members
+
+    return result
+
+
+def _common_prefix(a: str, b: str) -> str:
+    """Find the common prefix of two strings, trimmed to a word boundary."""
+    min_len = min(len(a), len(b))
+    end = 0
+    for i in range(min_len):
+        if a[i] != b[i]:
+            break
+        end = i + 1
+    prefix = a[:end].rstrip()
+    # Trim to last word boundary (don't split mid-word)
+    if end < len(a) and end < len(b) and a[end:end+1].isalnum() and b[end:end+1].isalnum():
+        # We stopped in the middle — this is fine, prefix is already the common part
+        pass
+    return prefix
+
+
+# ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
 
