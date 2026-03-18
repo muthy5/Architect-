@@ -11,9 +11,11 @@ from engine import (
     FileExtractionDiag,
     OperationalBrain,
     TechnicalAtom,
+    UsageStats,
+    _extraction_cache,
     clear_extraction_cache,
-    set_cached_extraction,
     get_cached_extraction,
+    set_cached_extraction,
 )
 
 
@@ -286,30 +288,74 @@ class TestParseAtomsWithDiag:
 
 
 # ---------------------------------------------------------------------------
-# Extraction cache clearing
+# clear_extraction_cache tests
 # ---------------------------------------------------------------------------
 
 
-class TestExtractionCacheClear:
-    def test_clear_removes_cached_entries(self):
-        set_cached_extraction("doc text", "file.txt", "anthropic", "model-1", '[]')
-        assert get_cached_extraction("doc text", "file.txt", "anthropic", "model-1") is not None
-        cleared = clear_extraction_cache()
-        assert cleared >= 1
-        assert get_cached_extraction("doc text", "file.txt", "anthropic", "model-1") is None
+class TestClearExtractionCache:
+    def setup_method(self):
+        _extraction_cache.clear()
 
-    def test_clear_returns_zero_when_empty(self):
-        clear_extraction_cache()  # ensure empty
+    def test_clear_empty_cache_returns_zero(self):
         assert clear_extraction_cache() == 0
+
+    def test_clear_populated_cache_returns_count(self):
+        set_cached_extraction("txt", "a.pdf", "anthropic", "model-1", "[{}]")
+        set_cached_extraction("txt2", "b.pdf", "openai", "model-2", "[{}]")
+        assert clear_extraction_cache() == 2
+
+    def test_cache_is_empty_after_clear(self):
+        set_cached_extraction("txt", "a.pdf", "anthropic", "model-1", "[{}]")
+        clear_extraction_cache()
+        assert get_cached_extraction("txt", "a.pdf", "anthropic", "model-1") is None
+
+    def test_clear_removes_bad_cached_response(self):
+        """A bad LLM response cached should be gone after clear."""
+        set_cached_extraction("doc", "f.pdf", "anthropic", "m", "NOT JSON")
+        assert get_cached_extraction("doc", "f.pdf", "anthropic", "m") == "NOT JSON"
+        clear_extraction_cache()
+        assert get_cached_extraction("doc", "f.pdf", "anthropic", "m") is None
 
     def test_cached_bad_response_poisons_retries(self):
         """Demonstrates the bug: a bad LLM response gets cached and
         every subsequent extraction returns the same bad result."""
         bad_response = "Sorry, I cannot extract specs from this document."
         set_cached_extraction("doc", "f.txt", "anthropic", "m", bad_response)
-        # Simulates what happens on retry — cache returns the bad response
         cached = get_cached_extraction("doc", "f.txt", "anthropic", "m")
         assert cached == bad_response
-        # After clearing, cache returns None so a fresh LLM call would be made
         clear_extraction_cache()
         assert get_cached_extraction("doc", "f.txt", "anthropic", "m") is None
+
+
+# ---------------------------------------------------------------------------
+# UsageStats.reset tests
+# ---------------------------------------------------------------------------
+
+
+class TestUsageStatsReset:
+    def test_reset_clears_all_fields(self):
+        stats = UsageStats()
+        stats.record("gpt-4o", 500, 200)
+        stats.record("gpt-4o", 300, 100)
+        stats.record_cache_hit()
+        assert stats.calls == 2
+        assert stats.cache_hits == 1
+        assert stats.total_input_tokens > 0
+
+        stats.reset()
+
+        assert stats.total_input_tokens == 0
+        assert stats.total_output_tokens == 0
+        assert stats.total_cost_usd == 0.0
+        assert stats.calls == 0
+        assert stats.cache_hits == 0
+
+    def test_reset_allows_reuse(self):
+        stats = UsageStats()
+        stats.record("gpt-4o-mini", 1000, 500)
+        stats.reset()
+        stats.record("gpt-4o-mini", 200, 100)
+        s = stats.summary()
+        assert s["calls"] == 1
+        assert s["input_tokens"] == 200
+        assert s["output_tokens"] == 100

@@ -17,12 +17,14 @@ import streamlit as st
 
 from engine import (
     COST_TIERS,
+    DEFAULT_CHUNK_CHARS,
     TAXONOMY_SECTIONS,
     ExtractionDiagnostics,
     FileExtractionDiag,
     OperationalBrain,
     TechnicalAtom,
     clear_extraction_cache,
+    split_text,
     usage_stats,
 )
 from resolver import (
@@ -320,6 +322,8 @@ with st.sidebar:
     )
 
     if st.button("\U0001f5d1\ufe0f Reset Session", use_container_width=True):
+        clear_extraction_cache()
+        usage_stats.reset()
         for k, v in _fresh_defaults().items():
             st.session_state[k] = v
         cleared = clear_extraction_cache()
@@ -683,7 +687,12 @@ with tab_extract:
     else:
         st.markdown(f"**{len(uploaded_files)} file(s) ready:**")
         for f in uploaded_files:
-            st.markdown(f"- `{f.name}` ({f.size:,} bytes)")
+            size_note = (
+                " \u2014 large file, will be split into chunks"
+                if f.size > DEFAULT_CHUNK_CHARS
+                else ""
+            )
+            st.markdown(f"- `{f.name}` ({f.size:,} bytes){size_note}")
 
         run_extraction = st.button("\U0001f52c Run Forensic Extraction", use_container_width=True)
 
@@ -752,9 +761,15 @@ with tab_extract:
 
                             # Sub-step: extraction via LLM
                             mid_pct = int(((i + 0.5) / n_files) * 100)
-                            progress.progress(mid_pct, text=f"[{i+1}/{n_files}] Extracting specs from `{uf.name}`\u2026")
+                            n_chunks = len(split_text(text))
+                            chunk_note = (
+                                f" (split into {n_chunks} chunks)"
+                                if n_chunks > 1
+                                else ""
+                            )
+                            progress.progress(mid_pct, text=f"[{i+1}/{n_files}] Extracting specs from `{uf.name}`{chunk_note}\u2026")
                             status_area.markdown(
-                                f"<small style='color:#4a90d9;'>Calling LLM for {uf.name}\u2026 (this may take a moment)</small>",
+                                f"<small style='color:#4a90d9;'>Calling LLM for {uf.name}{chunk_note}\u2026 (this may take a moment)</small>",
                                 unsafe_allow_html=True,
                             )
 
@@ -826,6 +841,13 @@ with tab_extract:
                             st.error(f"`{uf.name}`: The AI service is temporarily overloaded after {max_file_retries+1} attempts.")
                         elif "timeout" in err_msg.lower():
                             st.error(f"`{uf.name}`: Request timed out. The document may be too large.")
+                        elif "400" in err_msg or "bad request" in err_msg.lower():
+                            st.error(
+                                f"`{uf.name}`: Bad request (HTTP 400). This usually means the document "
+                                f"is too large, the prompt exceeds the model's context window, or the "
+                                f"API key doesn't have access to the selected model. "
+                                f"Try a smaller file or switch to a different model/tier."
+                            )
                         else:
                             st.error(f"Error processing `{uf.name}` after {max_file_retries+1} attempts. Check the Self-Healing Dashboard.")
 

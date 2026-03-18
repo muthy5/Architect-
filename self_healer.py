@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 import traceback
@@ -29,6 +30,8 @@ HISTORY_FILE = Path(os.environ.get(
 MAX_HISTORY_ENTRIES = 500          # rolling window
 MAX_RETRIES_DEFAULT = 3
 BACKOFF_BASE = 2                   # seconds
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +116,8 @@ def _fingerprint(operation: str, error_type: str, error_msg: str) -> str:
         bucket = "token_limit"
     elif "overloaded" in msg_lower or "529" in msg_lower or "503" in msg_lower:
         bucket = "server_overloaded"
+    elif "400" in msg_lower or "bad request" in msg_lower or "invalid_request" in msg_lower:
+        bucket = "bad_request"
     elif error_type == "TypeError":
         bucket = "type_error"
     else:
@@ -152,6 +157,7 @@ _DEFAULT_STRATEGIES: dict[str, list[str]] = {
     "pdf":              ["fallback_pdf_to_markdown"],
     "token_limit":      ["reduce_input_size", "chunk_input"],
     "server_overloaded": ["retry_with_backoff", "switch_model"],
+    "bad_request":      ["reduce_input_size", "switch_model"],
     "type_error":       ["coerce_types", "skip_and_continue"],
     "unknown":          ["retry_with_backoff", "skip_and_continue"],
 }
@@ -178,6 +184,8 @@ def _bucket_from_fingerprint(operation: str, error_type: str, error_msg: str) ->
         return "token_limit"
     if "overloaded" in msg_lower or "529" in msg_lower or "503" in msg_lower:
         return "server_overloaded"
+    if "400" in msg_lower or "bad request" in msg_lower or "invalid_request" in msg_lower:
+        return "bad_request"
     if error_type == "TypeError":
         return "type_error"
     return "unknown"
@@ -212,8 +220,11 @@ class SelfHealer:
                 k: RecoveryStrategy.from_dict(v)
                 for k, v in data.get("strategies", {}).items()
             }
-        except Exception:
-            # Corrupted file — start fresh
+        except Exception as e:
+            log.warning(
+                "Corrupted heal history file '%s', resetting learned "
+                "strategies: %s", self.history_file, e,
+            )
             self.history = []
             self.strategies = {}
 
@@ -230,8 +241,11 @@ class SelfHealer:
             }
             with open(self.history_file, "w") as f:
                 json.dump(data, f, indent=2, default=str)
-        except Exception:
-            pass  # Non-critical — don't crash on log write failure
+        except Exception as e:
+            log.warning(
+                "Failed to write heal history to '%s': %s",
+                self.history_file, e,
+            )
 
     # ------------------------------------------------------------------
     # Recording
@@ -454,7 +468,11 @@ class SelfHealer:
                             context["_current_strategy"] = strat_name
                             applied = True
                             break
-                        except Exception:
+                        except Exception as handler_err:
+                            log.warning(
+                                "Recovery handler '%s' failed for operation "
+                                "'%s': %s", strat_name, operation, handler_err,
+                            )
                             continue
 
                     elif strat_name == "retry_with_backoff":
