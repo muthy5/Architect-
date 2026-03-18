@@ -24,6 +24,11 @@ from typing import Any
 
 from engine import call_llm, split_text
 
+# Layman v3 has a massive system prompt (~10K tokens from the schema alone).
+# Use a smaller chunk size so each chunk + system prompt + output fits
+# comfortably and completes within a reasonable time.
+LAYMAN_CHUNK_CHARS = 30_000
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -122,11 +127,40 @@ _PROCESSING_RULES = r"""
 # ---------------------------------------------------------------------------
 
 
+def _strip_descriptions(obj: Any) -> Any:
+    """Recursively strip verbose 'description' fields from a JSON schema.
+
+    Keeps only descriptions that contain constraint keywords (enum, pattern,
+    minimum, required) — those carry information the LLM needs.
+    """
+    if isinstance(obj, dict):
+        result = {}
+        for k, v in obj.items():
+            if k == "description" and isinstance(v, str):
+                # Keep descriptions that encode constraints
+                lower = v.lower()
+                if any(kw in lower for kw in ("enum", "pattern", "must", "required", "one of", "minimum", "maximum")):
+                    result[k] = v
+                # else: drop verbose descriptions — property names are enough
+            else:
+                result[k] = _strip_descriptions(v)
+        return result
+    elif isinstance(obj, list):
+        return [_strip_descriptions(item) for item in obj]
+    return obj
+
+
 def _build_system_prompt(schema: dict) -> str:
-    """Build the full system prompt from schema + processing rules."""
-    # Compact schema representation (remove _renderingDirectives for prompt)
+    """Build the full system prompt from schema + processing rules.
+
+    Uses compact JSON (no indentation) and strips verbose descriptions
+    to reduce the system prompt from ~14K tokens to ~8K tokens.
+    """
+    # Remove rendering directives and strip verbose descriptions
     schema_copy = {k: v for k, v in schema.items() if not k.startswith("_")}
-    schema_json = json.dumps(schema_copy, indent=2)
+    schema_copy = _strip_descriptions(schema_copy)
+    # Compact JSON — no indentation saves ~30% tokens
+    schema_json = json.dumps(schema_copy, separators=(",", ":"))
 
     return f"""You are a chemistry procedure extractor. Your task is to convert
 source chemistry/laboratory documents into a structured, layman-friendly
@@ -267,23 +301,48 @@ class LaymanV3Brain:
     def extract_v3(self, text: str, filename: str = "document.txt") -> dict:
         """Extract a v3 layman procedural document from source text.
 
-        For documents that fit in a single chunk, makes one LLM call.
-        For larger documents, uses a two-pass approach:
-          1. Extract partial v3 from each chunk
-          2. Merge partials via a second LLM call
+        Uses layman-aware chunk sizing (30K chars) to account for the large
+        system prompt. For single-chunk docs, makes one LLM call. For
+        larger docs, extracts per chunk then merges via a second LLM call.
         """
-        chunks = split_text(text)
+        chunks = split_text(text, max_chars=LAYMAN_CHUNK_CHARS)
 
         if len(chunks) == 1:
             return self._extract_single(chunks[0], filename)
         else:
             return self._extract_multi(chunks, filename)
 
+    def extract_multi_documents(
+        self,
+        file_texts: dict[str, str],
+        progress_callback: Any = None,
+    ) -> dict:
+        """Extract v3 from multiple documents independently, then merge.
+
+        Instead of concatenating all documents into one giant prompt, each
+        document is processed separately and results are merged
+        programmatically. Falls back to LLM merge only when needed.
+        """
+        partials: list[dict] = []
+        total = len(file_texts)
+
+        for i, (fname, text) in enumerate(file_texts.items()):
+            if progress_callback:
+                progress_callback(i, total, fname)
+            doc = self.extract_v3(text, fname)
+            partials.append(doc)
+
+        if len(partials) == 1:
+            return partials[0]
+
+        return _merge_v3_documents(partials)
+
     def _extract_single(self, text: str, filename: str) -> dict:
         """Single-chunk extraction."""
         user_prompt = _build_user_prompt(text, filename)
-        # Use larger max_tokens for v3 output (it's much more detailed)
-        max_tokens = max(8192, min(32768, len(text) // 2))
+        # Cap at 16K output tokens — realistic for structured JSON and
+        # completable within a reasonable time with streaming.
+        max_tokens = max(4096, min(16384, len(text) // 3))
 
         raw = call_llm(
             user_prompt,
@@ -305,7 +364,7 @@ class LaymanV3Brain:
         for i, chunk in enumerate(chunks):
             chunk_name = f"{filename} (chunk {i + 1}/{len(chunks)})"
             user_prompt = _build_user_prompt(chunk, chunk_name)
-            max_tokens = max(8192, min(32768, len(chunk) // 2))
+            max_tokens = max(4096, min(16384, len(chunk) // 3))
 
             raw = call_llm(
                 user_prompt,
@@ -332,9 +391,8 @@ class LaymanV3Brain:
 
         # Merge pass
         merge_prompt = _build_merge_prompt(partials)
-        # Merge needs more output space
-        max_tokens = min(32768, sum(len(json.dumps(p)) for p in partials))
-        max_tokens = max(8192, max_tokens)
+        max_tokens = min(16384, sum(len(json.dumps(p)) for p in partials) // 4)
+        max_tokens = max(4096, max_tokens)
 
         raw = call_llm(
             merge_prompt,
@@ -347,6 +405,76 @@ class LaymanV3Brain:
         )
 
         return _parse_llm_json(raw)
+
+
+# ---------------------------------------------------------------------------
+# Programmatic multi-document merge (no LLM call needed)
+# ---------------------------------------------------------------------------
+
+def _merge_v3_documents(docs: list[dict]) -> dict:
+    """Merge multiple v3 documents into one without an LLM call.
+
+    Combines materials, zones, phases, verify tests, shutdown steps,
+    and emergency shutdown steps. Deduplicates by name/id where possible.
+    """
+    merged: dict[str, Any] = {
+        "meta": {},
+        "acquire": {"materials": []},
+        "stage": {"zones": []},
+        "execute": {"phases": []},
+        "verify": {"tests": []},
+        "shutdown": {"steps": []},
+        "emergencyShutdown": {"steps": []},
+    }
+
+    seen_material_names: set[str] = set()
+    seen_zone_names: set[str] = set()
+
+    for doc in docs:
+        # Meta: merge cross-cutting risks, keep first title/objective
+        meta = doc.get("meta", {})
+        if not merged["meta"].get("title") and meta.get("title"):
+            merged["meta"]["title"] = meta["title"]
+        if not merged["meta"].get("objective") and meta.get("objective"):
+            merged["meta"]["objective"] = meta["objective"]
+        for risk in meta.get("crossCuttingRisks", []):
+            merged["meta"].setdefault("crossCuttingRisks", []).append(risk)
+
+        # Materials: deduplicate by name
+        for mat in doc.get("acquire", {}).get("materials", []):
+            name = (mat.get("name") or "").lower().strip()
+            if name and name not in seen_material_names:
+                seen_material_names.add(name)
+                merged["acquire"]["materials"].append(mat)
+            elif not name:
+                merged["acquire"]["materials"].append(mat)
+
+        # Zones: deduplicate by name
+        for zone in doc.get("stage", {}).get("zones", []):
+            name = (zone.get("name") or "").lower().strip()
+            if name and name not in seen_zone_names:
+                seen_zone_names.add(name)
+                merged["stage"]["zones"].append(zone)
+            elif not name:
+                merged["stage"]["zones"].append(zone)
+
+        # Phases: concatenate (each doc contributes its own phases)
+        merged["execute"]["phases"].extend(
+            doc.get("execute", {}).get("phases", [])
+        )
+
+        # Verify, shutdown, emergency shutdown: concatenate
+        merged["verify"]["tests"].extend(
+            doc.get("verify", {}).get("tests", [])
+        )
+        merged["shutdown"]["steps"].extend(
+            doc.get("shutdown", {}).get("steps", [])
+        )
+        merged["emergencyShutdown"]["steps"].extend(
+            doc.get("emergencyShutdown", {}).get("steps", [])
+        )
+
+    return merged
 
 
 # ---------------------------------------------------------------------------
