@@ -51,20 +51,50 @@ st.markdown(
     /* ── Global ──────────────────────── */
     html, body, [data-testid="stApp"] {
         background-color: #0d0f14;
-        color: #c9d1e0;
+        color: #ffffff;
         font-family: 'IBM Plex Mono', 'Fira Code', monospace;
     }
-    h1, h2, h3 { color: #e2e8f0; }
+    h1, h2, h3 { color: #ffffff; }
+    p, span, li, label, div, td, th { color: #ffffff; }
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stMarkdownContainer"] span,
+    [data-testid="stText"],
+    [data-testid="stCaptionContainer"],
+    .stMarkdown, .stMarkdown p {
+        color: #ffffff !important;
+    }
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricDelta"] {
+        color: #ffffff !important;
+    }
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary span,
+    [data-testid="stExpander"] div {
+        color: #ffffff !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        color: #ffffff !important;
+    }
+    [data-testid="stWidgetLabel"],
+    [data-testid="stWidgetLabel"] p {
+        color: #ffffff !important;
+    }
 
     /* ── Sidebar ─────────────────────── */
     [data-testid="stSidebar"] {
         background-color: #111318;
         border-right: 1px solid #1e2330;
     }
+    [data-testid="stSidebar"],
+    [data-testid="stSidebar"] * {
+        color: #ffffff;
+    }
     [data-testid="stSidebar"] .stTextInput input,
     [data-testid="stSidebar"] .stSelectbox select {
         background-color: #1a1e2a;
-        color: #c9d1e0;
+        color: #ffffff;
         border: 1px solid #2d3346;
     }
 
@@ -93,7 +123,7 @@ st.markdown(
     }
     .atom-row:last-child { border-bottom: none; }
     .atom-param { color: #7dd3fc; min-width: 220px; font-weight: 600; }
-    .atom-value { color: #c9d1e0; flex: 1; }
+    .atom-value { color: #ffffff; flex: 1; }
     .atom-src   { color: #4a5568; font-size: 0.72rem; white-space: nowrap; }
     .badge-prereq {
         background: #312e81; color: #a5b4fc;
