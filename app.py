@@ -50,11 +50,20 @@ st.markdown(
     <style>
     /* ── Global ──────────────────────── */
     html, body, [data-testid="stApp"] {
-        background-color: #0d0f14;
-        color: #ffffff;
+        background-color: #0d0f14 !important;
+        color: #ffffff !important;
         font-family: 'IBM Plex Mono', 'Fira Code', monospace;
     }
-    h1, h2, h3 { color: #ffffff; }
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    [data-testid="stMainBlockContainer"],
+    [data-testid="stAppViewBlockContainer"],
+    .main, .block-container, section[data-testid="stSidebar"],
+    .stApp, header, footer {
+        background-color: #0d0f14 !important;
+        color: #ffffff !important;
+    }
+    h1, h2, h3 { color: #ffffff !important; }
     p, span, li, label, div, td, th { color: #ffffff; }
     [data-testid="stMarkdownContainer"],
     [data-testid="stMarkdownContainer"] p,
