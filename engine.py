@@ -296,6 +296,10 @@ class TechnicalAtom(BaseModel):
         default=False,
         description="Whether this atom was hoisted from a procedural step to its proper category",
     )
+    material_group: str | None = Field(
+        default=None,
+        description="Parent material/item name grouping related property atoms (e.g. '1,4-Butanediol')",
+    )
 
     def canonical_category(self) -> TaxonomyCategory:
         return normalise_category(self.category)
@@ -763,7 +767,7 @@ You are a meticulous technical-specification extraction engine.
 1. Extract every atomic technical fact from the document as a JSON object with
    these fields: category, parameter, value, unit (nullable), page_or_section
    (nullable), confidence (0-1), notes (nullable), is_prerequisite (bool),
-   hoisted (bool).
+   hoisted (bool), material_group (nullable).
 2. **Hoisting rule**: If a procedural step references a specific tool, material,
    consumable, or piece of equipment, you MUST emit TWO atoms:
    - One atom for the procedural step itself (category = "Procedural Steps").
@@ -773,6 +777,20 @@ You are a meticulous technical-specification extraction engine.
    set is_prerequisite = true.
 4. Use the exact category names from the taxonomy above.
 5. Return ONLY a JSON array of objects — no markdown fences, no commentary.
+6. **Material grouping rule**: When multiple atoms describe properties of the
+   same parent material, item, or piece of equipment, set `material_group` to
+   the short common name of that parent item. For example, if the document
+   specifies a CAS number, purity, and appearance for "1,4-Butanediol", each
+   atom should have `material_group` = "1,4-Butanediol". Similarly, if a copper
+   catalyst has chemistry, form, and pore volume specified, use
+   `material_group` = "Copper catalyst".
+7. **Material vs. property distinction**: A *material* is something that must be
+   acquired or procured. Properties like CAS number, purity, grade, form, and
+   appearance are *specifications* of that material, not separate materials.
+   Use `parameter` to describe the specific property (e.g. "CAS number",
+   "purity", "form") and `material_group` to name the parent material. The
+   `parameter` should describe WHAT is being specified, prefixed by the material
+   name for clarity (e.g. "1,4-Butanediol purity").
 """
 
 EXTRACTION_PROMPT_TEMPLATE = """\
@@ -818,11 +836,14 @@ def _coerce_atom_fields(item: dict) -> dict:
             coerced["hoisted"] = v.lower() in ("true", "1", "yes")
         else:
             coerced["hoisted"] = bool(v)
+    # material_group → str or None
+    if "material_group" in coerced and coerced["material_group"] is not None:
+        coerced["material_group"] = str(coerced["material_group"])
     # Strip unexpected keys that cause TypeError on construction
     valid_keys = {
         "category", "parameter", "value", "unit", "source_file",
         "page_or_section", "confidence", "notes", "is_prerequisite",
-        "hoisted",
+        "hoisted", "material_group",
     }
     coerced = {k: v for k, v in coerced.items() if k in valid_keys}
     return coerced
