@@ -720,9 +720,9 @@ def call_llm(
     }
 
     return healer.execute_with_healing(
-        operation="llm_call",
-        func=fn,
-        *(prompt, system, resolved_model, api_key, max_tokens),
+        "llm_call",
+        fn,
+        prompt, system, resolved_model, api_key, max_tokens,
         context=context,
         max_retries=3,
         recovery_handlers=recovery_handlers,
