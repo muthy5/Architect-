@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -271,20 +271,20 @@ class TechnicalAtom(BaseModel):
     value: str = Field(
         ..., description="The value or specification for this parameter"
     )
-    unit: Optional[str] = Field(
+    unit: str | None = Field(
         None, description="Unit of measurement, if applicable"
     )
     source_file: str = Field(
         ..., description="Name of the source document"
     )
-    page_or_section: Optional[str] = Field(
+    page_or_section: str | None = Field(
         None, description="Page number or section reference"
     )
     confidence: float = Field(
         default=1.0, ge=0.0, le=1.0,
         description="Extraction confidence score (0.0 – 1.0)"
     )
-    notes: Optional[str] = Field(
+    notes: str | None = Field(
         None, description="Additional context or caveats"
     )
     is_prerequisite: bool = Field(
@@ -632,9 +632,9 @@ class OperationalBrain:
 
     def organize_by_taxonomy(
         self, atoms: list[TechnicalAtom]
-    ) -> Dict[str, List[TechnicalAtom]]:
+    ) -> dict[str, list[TechnicalAtom]]:
         """Group atoms into numbered taxonomy sections for display."""
-        grouped: Dict[str, List[TechnicalAtom]] = {
+        grouped: dict[str, list[TechnicalAtom]] = {
             section: [] for section in TAXONOMY_SECTIONS
         }
         for atom in atoms:

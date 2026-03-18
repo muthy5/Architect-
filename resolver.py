@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
 from engine import TechnicalAtom, normalise_category
 
@@ -27,14 +26,14 @@ class Conflict:
     parameter: str
     atoms: list[TechnicalAtom] = field(default_factory=list)
     resolved: bool = False
-    resolved_atom: Optional[TechnicalAtom] = None
+    resolved_atom: TechnicalAtom | None = None
 
     @property
     def key(self) -> str:
         return f"{self.category}||{self.parameter.strip().lower()}"
 
     @property
-    def candidates(self) -> list[Tuple[str, str, TechnicalAtom]]:
+    def candidates(self) -> list[tuple[str, str, TechnicalAtom]]:
         """Return list of (source_file, value, atom) tuples for UI display."""
         return [(a.source_file, a.value, a) for a in self.atoms]
 
@@ -122,9 +121,9 @@ def resolve_conflict(conflict: Conflict, chosen_idx: int) -> None:
 # ---------------------------------------------------------------------------
 
 def apply_resolutions(
-    taxonomy: Dict[str, List[TechnicalAtom]],
+    taxonomy: dict[str, list[TechnicalAtom]],
     resolution_state: ResolutionState,
-) -> Dict[str, List[TechnicalAtom]]:
+) -> dict[str, list[TechnicalAtom]]:
     """Return a new taxonomy dict with conflicts replaced by their resolved atoms.
 
     Non-conflicting atoms are kept as-is. For each resolved conflict the
@@ -141,7 +140,7 @@ def apply_resolutions(
             continue
         resolved_by_key[c.key] = c.resolved_atom
 
-    result: Dict[str, List[TechnicalAtom]] = {}
+    result: dict[str, list[TechnicalAtom]] = {}
     seen_keys: set[str] = set()
 
     for section, atoms in taxonomy.items():
@@ -164,7 +163,7 @@ def apply_resolutions(
 # Utility
 # ---------------------------------------------------------------------------
 
-def flatten_taxonomy(taxonomy: Dict[str, List[TechnicalAtom]]) -> List[TechnicalAtom]:
+def flatten_taxonomy(taxonomy: dict[str, list[TechnicalAtom]]) -> list[TechnicalAtom]:
     """Flatten a taxonomy dict into a single list of atoms."""
     atoms: list[TechnicalAtom] = []
     for section_atoms in taxonomy.values():
