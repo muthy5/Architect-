@@ -12,7 +12,13 @@ from typing import Dict, List, Optional
 
 import streamlit as st
 
-from engine import TAXONOMY_SECTIONS, OperationalBrain, TechnicalAtom
+from engine import (
+    COST_TIERS,
+    TAXONOMY_SECTIONS,
+    OperationalBrain,
+    TechnicalAtom,
+    usage_stats,
+)
 from resolver import (
     Conflict,
     ResolutionState,
@@ -185,6 +191,23 @@ with st.sidebar:
         placeholder="claude-sonnet-4-20250514",
         help="Leave blank to use the recommended default for each provider.",
     )
+
+    cost_tier = st.selectbox(
+        "Cost / Speed Tier",
+        ["quality", "balanced", "economy"],
+        format_func=lambda t: {
+            "quality": "Quality  —  best extraction accuracy",
+            "balanced": "Balanced  —  good quality, much cheaper",
+            "economy": "Economy  —  fastest & cheapest",
+        }[t],
+        help="Controls which model is used when 'Model' is left blank.",
+    )
+
+    # Show the effective model for transparency
+    _provider_key = provider.strip().lower()
+    _tier_info = COST_TIERS.get(_provider_key, {}).get(cost_tier, {})
+    if not model_override and _tier_info:
+        st.caption(f"Using: **{_tier_info.get('label', '')}**")
 
     st.markdown("---")
     st.markdown("### \U0001f4c2 Upload Source Files")
@@ -465,6 +488,7 @@ with tab_extract:
                     provider=provider,
                     api_key=api_key,
                     model=model_override or None,
+                    tier=cost_tier,
                 )
 
                 n_files = len(uploaded_files)
@@ -544,6 +568,18 @@ with tab_extract:
                         "This can happen if the documents don't contain structured technical data, "
                         "or if the LLM couldn't parse them. Try uploading clearer source documents."
                     )
+
+                # Show cost / usage summary
+                stats = usage_stats.summary()
+                if stats["calls"] > 0 or stats["cache_hits"] > 0:
+                    cost_col1, cost_col2, cost_col3 = st.columns(3)
+                    cost_col1.metric("API Calls", stats["calls"])
+                    cost_col2.metric("Cache Hits", stats["cache_hits"])
+                    cost_col3.metric("Est. Cost", f"${stats['estimated_cost_usd']:.4f}")
+                    if stats["input_tokens"] > 0:
+                        st.caption(
+                            f"Tokens: {stats['input_tokens']:,} in / {stats['output_tokens']:,} out"
+                        )
 
                 taxonomy = brain.organize_by_taxonomy(all_atoms)
                 resolution_state = detect_conflicts(all_atoms)

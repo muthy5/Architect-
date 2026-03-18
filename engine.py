@@ -5,6 +5,7 @@ engine.py — TechnicalAtom Pydantic model · OperationalBrain (extraction + hoi
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -306,6 +307,119 @@ class TechnicalAtom(BaseModel):
 MAX_RETRIES = 3
 RETRY_BACKOFF = [2, 4, 8]  # seconds
 
+# ---------------------------------------------------------------------------
+# Cost tiers — model recommendations per provider
+# ---------------------------------------------------------------------------
+
+COST_TIERS = {
+    "anthropic": {
+        "quality": {"model": "claude-sonnet-4-20250514", "label": "Claude Sonnet 4 (best quality)"},
+        "balanced": {"model": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (good quality, 10x cheaper)"},
+        "economy": {"model": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (lowest cost)"},
+    },
+    "openai": {
+        "quality": {"model": "gpt-4o", "label": "GPT-4o (best quality)"},
+        "balanced": {"model": "gpt-4o-mini", "label": "GPT-4o Mini (good quality, 15x cheaper)"},
+        "economy": {"model": "gpt-4o-mini", "label": "GPT-4o Mini (lowest cost)"},
+    },
+}
+
+
+def get_tier_model(provider: str, tier: str) -> str:
+    """Return the default model for a given provider and cost tier."""
+    provider_key = provider.strip().lower()
+    tier_key = tier.strip().lower()
+    return COST_TIERS.get(provider_key, {}).get(tier_key, {}).get(
+        "model", "claude-sonnet-4-20250514"
+    )
+
+
+def estimate_max_tokens(input_text_len: int) -> int:
+    """Scale max output tokens based on input size.
+
+    Smaller documents need fewer output tokens. This avoids reserving
+    16 K output tokens for a 500-word document, which lets the API
+    pick a cheaper routing / reduces latency.
+    """
+    # Rough heuristic: 1 char ≈ 0.25 tokens; expect output ≈ 1.5x the atom density
+    estimated_input_tokens = input_text_len // 4
+    # Minimum 2048, cap at 16384
+    return max(2048, min(16384, estimated_input_tokens * 2))
+
+
+# ---------------------------------------------------------------------------
+# File-hash response cache (session-scoped, avoids duplicate API calls)
+# ---------------------------------------------------------------------------
+
+_extraction_cache: dict[str, list[dict]] = {}
+
+
+def _cache_key(text: str, filename: str, provider: str, model: str) -> str:
+    """Create a deterministic cache key from document content + model config."""
+    h = hashlib.sha256(f"{text}|{filename}|{provider}|{model}".encode()).hexdigest()
+    return h
+
+
+def get_cached_extraction(text: str, filename: str, provider: str, model: str):
+    """Return cached atom dicts if available, else None."""
+    key = _cache_key(text, filename, provider, model)
+    return _extraction_cache.get(key)
+
+
+def set_cached_extraction(text: str, filename: str, provider: str, model: str, atoms_raw: str):
+    """Store raw LLM response in cache."""
+    key = _cache_key(text, filename, provider, model)
+    _extraction_cache[key] = atoms_raw
+
+
+# ---------------------------------------------------------------------------
+# Token usage tracking
+# ---------------------------------------------------------------------------
+
+class UsageStats:
+    """Tracks cumulative token usage and estimated costs for a session."""
+
+    # Approximate pricing per million tokens (USD) as of 2025
+    PRICING = {
+        "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
+        "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0},
+        "gpt-4o": {"input": 2.50, "output": 10.0},
+        "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    }
+
+    def __init__(self):
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_cost_usd = 0.0
+        self.calls = 0
+        self.cache_hits = 0
+
+    def record(self, model: str, input_tokens: int, output_tokens: int):
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.calls += 1
+        pricing = self.PRICING.get(model, {"input": 3.0, "output": 15.0})
+        self.total_cost_usd += (
+            input_tokens * pricing["input"] / 1_000_000
+            + output_tokens * pricing["output"] / 1_000_000
+        )
+
+    def record_cache_hit(self):
+        self.cache_hits += 1
+
+    def summary(self) -> dict:
+        return {
+            "calls": self.calls,
+            "cache_hits": self.cache_hits,
+            "input_tokens": self.total_input_tokens,
+            "output_tokens": self.total_output_tokens,
+            "estimated_cost_usd": round(self.total_cost_usd, 6),
+        }
+
+
+# Global session stats instance
+usage_stats = UsageStats()
+
 
 def _retry_on_transient(fn, *args, **kwargs) -> str:
     """Retry a callable on transient network / rate-limit errors with backoff."""
@@ -339,12 +453,25 @@ def _call_anthropic(
     import anthropic
 
     client = anthropic.Anthropic(api_key=api_key)
+    # Use prompt caching: mark the system prompt as cacheable so it's
+    # reused across multiple file extractions in the same session.
     resp = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=system,
+        system=[
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": prompt}],
     )
+    # Track token usage
+    if hasattr(resp, "usage") and resp.usage:
+        input_tok = getattr(resp.usage, "input_tokens", 0)
+        output_tok = getattr(resp.usage, "output_tokens", 0)
+        usage_stats.record(model, input_tok, output_tok)
     return resp.content[0].text
 
 
@@ -366,6 +493,11 @@ def _call_openai(
             {"role": "user", "content": prompt},
         ],
     )
+    # Track token usage
+    if hasattr(resp, "usage") and resp.usage:
+        input_tok = getattr(resp.usage, "prompt_tokens", 0)
+        output_tok = getattr(resp.usage, "completion_tokens", 0)
+        usage_stats.record(model, input_tok, output_tok)
     return resp.choices[0].message.content
 
 
@@ -377,16 +509,17 @@ def call_llm(
     model: str | None = None,
     api_key: str = "",
     max_tokens: int = 16384,
+    tier: str = "quality",
 ) -> str:
     """Dispatch a prompt to the chosen LLM provider and return raw text.
 
     Retries automatically on transient errors (rate-limit, timeout, overloaded).
     """
     if provider.lower() == "anthropic":
-        model = model or "claude-sonnet-4-20250514"
+        model = model or get_tier_model("anthropic", tier)
         return _retry_on_transient(_call_anthropic, prompt, system, model, api_key, max_tokens)
     elif provider.lower() == "openai":
-        model = model or "gpt-4o"
+        model = model or get_tier_model("openai", tier)
         return _retry_on_transient(_call_openai, prompt, system, model, api_key, max_tokens)
     else:
         raise ValueError(f"Unknown provider: {provider}")
@@ -439,21 +572,44 @@ class OperationalBrain:
         provider: str = "Anthropic",
         model: str | None = None,
         api_key: str = "",
+        tier: str = "quality",
     ):
         self.provider = provider
         self.model = model
         self.api_key = api_key
+        self.tier = tier
 
     def extract_atoms(self, text: str, filename: str) -> list[TechnicalAtom]:
-        """Extract TechnicalAtoms from a document's text."""
+        """Extract TechnicalAtoms from a document's text.
+
+        Uses file-content caching to skip API calls for previously-extracted
+        documents, and dynamic max_tokens to reduce cost on smaller files.
+        """
+        effective_model = self.model or get_tier_model(self.provider, self.tier)
+
+        # Check cache — skip API call if we've already extracted this exact content
+        cached = get_cached_extraction(text, filename, self.provider, effective_model)
+        if cached is not None:
+            log.info("Cache hit for %s — skipping API call", filename)
+            usage_stats.record_cache_hit()
+            atoms = self._parse_atoms(cached, filename)
+            return self._normalise(atoms)
+
         prompt = EXTRACTION_PROMPT_TEMPLATE.format(filename=filename, text=text)
+        max_tok = estimate_max_tokens(len(text))
         raw = call_llm(
             prompt,
             SYSTEM_PROMPT,
             provider=self.provider,
             model=self.model,
             api_key=self.api_key,
+            max_tokens=max_tok,
+            tier=self.tier,
         )
+
+        # Cache the raw response for future re-uploads
+        set_cached_extraction(text, filename, self.provider, effective_model, raw)
+
         atoms = self._parse_atoms(raw, filename)
         atoms = self._normalise(atoms)
         return atoms
