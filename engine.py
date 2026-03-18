@@ -6,11 +6,15 @@ engine.py — TechnicalAtom Pydantic model · OperationalBrain (extraction + hoi
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 20-point taxonomy
@@ -299,12 +303,38 @@ class TechnicalAtom(BaseModel):
 # LLM client helpers — provider-agnostic
 # ---------------------------------------------------------------------------
 
+MAX_RETRIES = 3
+RETRY_BACKOFF = [2, 4, 8]  # seconds
+
+
+def _retry_on_transient(fn, *args, **kwargs) -> str:
+    """Retry a callable on transient network / rate-limit errors with backoff."""
+    last_err = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            last_err = exc
+            err_str = str(exc).lower()
+            is_transient = any(
+                t in err_str
+                for t in ("rate", "timeout", "overloaded", "503", "529", "connection")
+            )
+            if not is_transient or attempt >= MAX_RETRIES:
+                raise
+            wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+            log.warning("Transient LLM error (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1, MAX_RETRIES, wait, exc)
+            time.sleep(wait)
+    raise last_err  # type: ignore[misc]
+
+
 def _call_anthropic(
     prompt: str,
     system: str,
     model: str,
     api_key: str,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
 ) -> str:
     import anthropic
 
@@ -323,7 +353,7 @@ def _call_openai(
     system: str,
     model: str,
     api_key: str,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
 ) -> str:
     import openai
 
@@ -346,15 +376,18 @@ def call_llm(
     provider: str = "anthropic",
     model: str | None = None,
     api_key: str = "",
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
 ) -> str:
-    """Dispatch a prompt to the chosen LLM provider and return raw text."""
+    """Dispatch a prompt to the chosen LLM provider and return raw text.
+
+    Retries automatically on transient errors (rate-limit, timeout, overloaded).
+    """
     if provider.lower() == "anthropic":
         model = model or "claude-sonnet-4-20250514"
-        return _call_anthropic(prompt, system, model, api_key, max_tokens)
+        return _retry_on_transient(_call_anthropic, prompt, system, model, api_key, max_tokens)
     elif provider.lower() == "openai":
         model = model or "gpt-4o"
-        return _call_openai(prompt, system, model, api_key, max_tokens)
+        return _retry_on_transient(_call_openai, prompt, system, model, api_key, max_tokens)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -460,7 +493,11 @@ class OperationalBrain:
 
     @staticmethod
     def _parse_atoms(raw: str, source_file: str) -> list[TechnicalAtom]:
-        """Parse the LLM JSON response into TechnicalAtom instances."""
+        """Parse the LLM JSON response into TechnicalAtom instances.
+
+        Returns parsed atoms.  Logs warnings for skipped items so the user
+        can see why some data was dropped.
+        """
         # Strip markdown fences if the LLM added them
         cleaned = re.sub(r"```(?:json)?", "", raw).strip()
         cleaned = cleaned.strip("`").strip()
@@ -470,19 +507,34 @@ class OperationalBrain:
             # Try to find a JSON array in the response
             match = re.search(r"\[.*\]", cleaned, re.DOTALL)
             if match:
-                data = json.loads(match.group())
+                try:
+                    data = json.loads(match.group())
+                except json.JSONDecodeError:
+                    log.warning("Could not parse any JSON from LLM response for %s", source_file)
+                    return []
             else:
+                log.warning("No JSON array found in LLM response for %s (response length: %d chars)",
+                            source_file, len(raw))
                 return []
 
+        if not isinstance(data, list):
+            log.warning("LLM returned non-array JSON for %s", source_file)
+            return []
+
         atoms: list[TechnicalAtom] = []
+        skipped = 0
         for item in data:
             if not isinstance(item, dict):
+                skipped += 1
                 continue
             item.setdefault("source_file", source_file)
             try:
                 atoms.append(TechnicalAtom(**item))
-            except Exception:
-                continue
+            except Exception as exc:
+                skipped += 1
+                log.debug("Skipped malformed atom in %s: %s — %s", source_file, exc, item)
+        if skipped:
+            log.warning("Skipped %d malformed item(s) from %s", skipped, source_file)
         return atoms
 
     @staticmethod
