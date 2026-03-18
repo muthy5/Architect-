@@ -616,13 +616,20 @@ def build_pdf(taxonomy: dict[str, list[TechnicalAtom]], title: str) -> bytes:
         md = build_markdown(taxonomy, title)
         return md.encode("utf-8")
     except Exception as e:
-        # Self-healing: record failure and apply learned fallback
+        # Self-healing: record PDF failure, then apply markdown fallback
         healer = get_healer()
         healer.record_failure("pdf_export", e, context={"title": title})
-        healer.learn_strategy("pdf_export", e, "fallback_pdf_to_markdown", succeeded=False)
         st.warning(f"PDF generation failed ({e}). Falling back to Markdown bytes.")
         md = build_markdown(taxonomy, title)
-        return md.encode("utf-8")
+        fallback_bytes = md.encode("utf-8")
+        # Record the fallback as a successful recovery
+        healer.record_success(
+            "pdf_export",
+            context={"title": title, "fallback": "markdown"},
+            recovery_strategy="fallback_pdf_to_markdown",
+        )
+        healer.learn_strategy("pdf_export", e, "fallback_pdf_to_markdown", succeeded=True)
+        return fallback_bytes
 
 
 # ──────────────────────────────────────────────
@@ -696,6 +703,7 @@ with tab_extract:
 
                     max_file_retries = 2
                     succeeded = False
+                    last_extraction_error = None
 
                     for attempt in range(max_file_retries + 1):
                         try:
@@ -723,12 +731,16 @@ with tab_extract:
                             all_atoms.extend(atoms)
 
                             recovery_note = ""
-                            if attempt > 0:
+                            if attempt > 0 and last_extraction_error:
                                 recovery_note = f" (self-healed after {attempt} retry)"
                                 healer.record_success(
                                     "file_extraction",
                                     context={"filename": uf.name, "attempt": attempt},
                                     recovery_strategy="retry_with_backoff",
+                                )
+                                healer.learn_strategy(
+                                    "file_extraction", last_extraction_error,
+                                    "retry_with_backoff", succeeded=True,
                                 )
 
                             if len(atoms) == 0:
@@ -748,6 +760,7 @@ with tab_extract:
                             break
 
                         except Exception as e:
+                            last_extraction_error = e
                             healer.record_failure(
                                 "file_extraction", e,
                                 context={"filename": uf.name, "attempt": attempt},

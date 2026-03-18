@@ -580,6 +580,40 @@ Extract all technical atoms as a JSON array. Remember the hoisting and prerequis
 """
 
 
+def _coerce_atom_fields(item: dict) -> dict:
+    """Coerce LLM-returned field values to the types TechnicalAtom expects.
+
+    Handles common type mismatches: confidence as string, is_prerequisite as
+    string, numeric values in string fields, and unexpected extra keys.
+    """
+    coerced = dict(item)
+    # str fields — force to str
+    for key in ("category", "parameter", "value", "unit",
+                "source_file", "page_or_section", "notes"):
+        if key in coerced and coerced[key] is not None:
+            coerced[key] = str(coerced[key])
+    # confidence → float
+    if "confidence" in coerced:
+        try:
+            coerced["confidence"] = float(coerced["confidence"])
+        except (ValueError, TypeError):
+            coerced["confidence"] = 1.0
+    # is_prerequisite → bool
+    if "is_prerequisite" in coerced:
+        v = coerced["is_prerequisite"]
+        if isinstance(v, str):
+            coerced["is_prerequisite"] = v.lower() in ("true", "1", "yes")
+        else:
+            coerced["is_prerequisite"] = bool(v)
+    # Strip unexpected keys that cause TypeError on construction
+    valid_keys = {
+        "category", "parameter", "value", "unit", "source_file",
+        "page_or_section", "confidence", "notes", "is_prerequisite",
+    }
+    coerced = {k: v for k, v in coerced.items() if k in valid_keys}
+    return coerced
+
+
 class OperationalBrain:
     """Orchestrates LLM-based extraction, hoisting enforcement, and taxonomy normalisation."""
 
@@ -754,7 +788,29 @@ class OperationalBrain:
             item.setdefault("source_file", source_file)
             try:
                 atoms.append(TechnicalAtom(**item))
-            except Exception as exc:
+            except (TypeError, Exception) as exc:
+                # Self-healing: try coercing fields to expected types
+                if isinstance(exc, (TypeError, ValueError)):
+                    try:
+                        coerced = _coerce_atom_fields(item)
+                        atoms.append(TechnicalAtom(**coerced))
+                        healer.record_success(
+                            "atom_construction",
+                            context={"source_file": source_file},
+                            recovery_strategy="coerce_types",
+                        )
+                        healer.learn_strategy(
+                            "atom_construction", exc, "coerce_types", succeeded=True,
+                        )
+                        continue
+                    except Exception:
+                        healer.record_failure(
+                            "atom_construction", exc,
+                            context={"source_file": source_file},
+                        )
+                        healer.learn_strategy(
+                            "atom_construction", exc, "coerce_types", succeeded=False,
+                        )
                 skipped += 1
                 log.debug("Skipped malformed atom in %s: %s — %s", source_file, exc, item)
         if skipped:
