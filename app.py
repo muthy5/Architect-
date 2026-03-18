@@ -204,8 +204,17 @@ with st.sidebar:
     st.markdown("---")
 
     provider = st.selectbox("LLM Provider", ["Anthropic", "OpenAI"])
+
+    # Pre-populate from Streamlit secrets if available
+    _secret_key = ""
+    if provider == "Anthropic":
+        _secret_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    elif provider == "OpenAI":
+        _secret_key = st.secrets.get("OPENAI_API_KEY", "")
+
     api_key = st.text_input(
         "API Key",
+        value=_secret_key,
         type="password",
         placeholder="sk-ant-... or sk-...",
     )
