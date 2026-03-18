@@ -326,6 +326,10 @@ with st.sidebar:
         usage_stats.reset()
         for k, v in _fresh_defaults().items():
             st.session_state[k] = v
+        cleared = clear_extraction_cache()
+        usage_stats.reset()
+        if cleared:
+            log.info("Reset session: cleared %d cached extraction(s)", cleared)
         st.rerun()
 
     # ── Self-Healing Dashboard ─────────────

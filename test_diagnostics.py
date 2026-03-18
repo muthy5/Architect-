@@ -316,6 +316,16 @@ class TestClearExtractionCache:
         clear_extraction_cache()
         assert get_cached_extraction("doc", "f.pdf", "anthropic", "m") is None
 
+    def test_cached_bad_response_poisons_retries(self):
+        """Demonstrates the bug: a bad LLM response gets cached and
+        every subsequent extraction returns the same bad result."""
+        bad_response = "Sorry, I cannot extract specs from this document."
+        set_cached_extraction("doc", "f.txt", "anthropic", "m", bad_response)
+        cached = get_cached_extraction("doc", "f.txt", "anthropic", "m")
+        assert cached == bad_response
+        clear_extraction_cache()
+        assert get_cached_extraction("doc", "f.txt", "anthropic", "m") is None
+
 
 # ---------------------------------------------------------------------------
 # UsageStats.reset tests
