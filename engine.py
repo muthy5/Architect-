@@ -229,6 +229,54 @@ ALIAS_MAP: dict[str, TaxonomyCategory] = {
     "drawings": TaxonomyCategory.DOCUMENTATION_REFERENCES,
     "manuals": TaxonomyCategory.DOCUMENTATION_REFERENCES,
     "sop": TaxonomyCategory.DOCUMENTATION_REFERENCES,
+    # Chemistry — Materials / Reagents
+    "reagent": TaxonomyCategory.MATERIALS,
+    "reagents": TaxonomyCategory.MATERIALS,
+    "reactant": TaxonomyCategory.MATERIALS,
+    "solvent": TaxonomyCategory.MATERIALS,
+    "solution": TaxonomyCategory.MATERIALS,
+    "acid": TaxonomyCategory.MATERIALS,
+    "base": TaxonomyCategory.MATERIALS,
+    "buffer": TaxonomyCategory.MATERIALS,
+    "analyte": TaxonomyCategory.MATERIALS,
+    "catalyst": TaxonomyCategory.MATERIALS,
+    "precipitate": TaxonomyCategory.MATERIALS,
+    # Chemistry — Tools & Equipment
+    "beaker": TaxonomyCategory.TOOLS_EQUIPMENT,
+    "flask": TaxonomyCategory.TOOLS_EQUIPMENT,
+    "erlenmeyer": TaxonomyCategory.TOOLS_EQUIPMENT,
+    "pipette": TaxonomyCategory.TOOLS_EQUIPMENT,
+    "burette": TaxonomyCategory.TOOLS_EQUIPMENT,
+    "centrifuge": TaxonomyCategory.TOOLS_EQUIPMENT,
+    "fume hood": TaxonomyCategory.TOOLS_EQUIPMENT,
+    "volumetric flask": TaxonomyCategory.TOOLS_EQUIPMENT,
+    # Chemistry — Consumables
+    "indicator": TaxonomyCategory.CONSUMABLES,
+    "litmus": TaxonomyCategory.CONSUMABLES,
+    "filter paper": TaxonomyCategory.CONSUMABLES,
+    "ph paper": TaxonomyCategory.CONSUMABLES,
+    # Chemistry — Thermal
+    "boiling point": TaxonomyCategory.THERMAL,
+    "melting point": TaxonomyCategory.THERMAL,
+    "exothermic": TaxonomyCategory.THERMAL,
+    "endothermic": TaxonomyCategory.THERMAL,
+    # Chemistry — Safety
+    "sds": TaxonomyCategory.SAFETY_COMPLIANCE,
+    "msds": TaxonomyCategory.SAFETY_COMPLIANCE,
+    "ppe": TaxonomyCategory.SAFETY_COMPLIANCE,
+    "corrosive": TaxonomyCategory.SAFETY_COMPLIANCE,
+    "flammable": TaxonomyCategory.SAFETY_COMPLIANCE,
+    "toxic": TaxonomyCategory.SAFETY_COMPLIANCE,
+    "carcinogen": TaxonomyCategory.SAFETY_COMPLIANCE,
+    # Chemistry — Quality / Inspection
+    "titration": TaxonomyCategory.QUALITY_INSPECTION,
+    "chromatography": TaxonomyCategory.QUALITY_INSPECTION,
+    "spectroscopy": TaxonomyCategory.QUALITY_INSPECTION,
+    # Chemistry — Waste / Storage
+    "waste disposal": TaxonomyCategory.LOGISTICS_STORAGE,
+    "neutralisation": TaxonomyCategory.LOGISTICS_STORAGE,
+    "neutralization": TaxonomyCategory.LOGISTICS_STORAGE,
+    "chemical waste": TaxonomyCategory.LOGISTICS_STORAGE,
 }
 
 

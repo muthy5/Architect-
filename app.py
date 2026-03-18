@@ -38,6 +38,14 @@ from resolver import (
     resolve_conflict,
 )
 from self_healer import get_healer
+from chemistry import (
+    KitZone,
+    SensoryType,
+    ChemistryInstructionSet,
+    ZONE_DESCRIPTIONS,
+    build_chemistry_instructions,
+    is_chemistry_taxonomy,
+)
 
 # ──────────────────────────────────────────────
 # Page Config
@@ -241,6 +249,136 @@ st.markdown(
 
     /* ── Progress bar ────────────────── */
     .stProgress > div > div { background-color: #3b82f6; }
+
+    /* ── Chemistry Zones ────────────── */
+    .chem-zone-card {
+        background: #141720;
+        border: 1px solid #1e2330;
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+        margin-bottom: 1rem;
+    }
+    .chem-zone-a { border-left: 4px solid #3b82f6; }
+    .chem-zone-b { border-left: 4px solid #8b5cf6; }
+    .chem-zone-c { border-left: 4px solid #f59e0b; }
+    .chem-zone-d { border-left: 4px solid #6b7280; }
+    .chem-zone-label {
+        font-size: 0.72rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        font-weight: 700;
+        margin-bottom: 0.3rem;
+    }
+    .chem-zone-a .chem-zone-label { color: #3b82f6; }
+    .chem-zone-b .chem-zone-label { color: #8b5cf6; }
+    .chem-zone-c .chem-zone-label { color: #f59e0b; }
+    .chem-zone-d .chem-zone-label { color: #6b7280; }
+    .chem-zone-desc {
+        color: #9ca3af;
+        font-size: 0.78rem;
+        margin-bottom: 0.5rem;
+        font-style: italic;
+    }
+
+    /* ── Action-Result Table ─────────── */
+    .ar-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0.75rem 0;
+    }
+    .ar-table th {
+        background: #1a1e2a;
+        color: #4a90d9;
+        font-size: 0.72rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 0.5rem 0.75rem;
+        text-align: left;
+        border-bottom: 2px solid #2d3346;
+    }
+    .ar-table td {
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid #1e2330;
+        font-size: 0.82rem;
+        vertical-align: top;
+    }
+    .ar-step-num {
+        color: #4a90d9;
+        font-weight: 700;
+        white-space: nowrap;
+        width: 40px;
+    }
+    .ar-action { color: #e2e8f0; }
+    .ar-result { color: #6ee7b7; font-style: italic; }
+
+    /* ── Red Box (hazardous steps) ──── */
+    .red-box {
+        border: 2px solid #dc2626;
+        border-radius: 6px;
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+        background: rgba(220, 38, 38, 0.08);
+    }
+    .red-box-label {
+        color: #fca5a5;
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 0.3rem;
+    }
+    .red-box td { border-bottom-color: #7f1d1d !important; }
+
+    /* ── Sensory Badges ─────────────── */
+    .sensory-badge {
+        display: inline-block;
+        border-radius: 4px;
+        padding: 2px 8px;
+        font-size: 0.65rem;
+        font-weight: 700;
+        margin: 2px 3px;
+        white-space: nowrap;
+    }
+    .sensory-visual   { background: #1e3a5f; color: #93c5fd; }
+    .sensory-auditory  { background: #3b1f5e; color: #c4b5fd; }
+    .sensory-tactile   { background: #3b2f1e; color: #fcd34d; }
+    .sensory-olfactory { background: #1e3a2f; color: #86efac; }
+
+    /* ── Safe Pause Point ───────────── */
+    .safe-pause {
+        background: #14532d;
+        border: 1px dashed #22c55e;
+        border-radius: 6px;
+        padding: 0.4rem 0.8rem;
+        color: #86efac;
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin: 0.4rem 0;
+        text-align: center;
+    }
+
+    /* ── Troubleshooting Sidebar ────── */
+    .ts-card {
+        background: #1a1520;
+        border: 1px solid #2d2340;
+        border-radius: 6px;
+        padding: 0.6rem 0.8rem;
+        margin: 0.4rem 0;
+        font-size: 0.78rem;
+    }
+    .ts-card-critical {
+        border-color: #7f1d1d;
+        background: #1a1215;
+    }
+    .ts-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-weight: 700;
+        margin-bottom: 0.2rem;
+    }
+    .ts-label-warning { color: #f59e0b; }
+    .ts-label-critical { color: #f87171; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -739,8 +877,9 @@ st.markdown("---")
 
 # ── Tab Layout ──────────────────────────────────
 
-tab_extract, tab_resolve, tab_mpr, tab_gap, tab_export = st.tabs(
-    ["\u2460 Extract", "\u2461 Resolve Conflicts", "\u2462 MPR View", "\u2463 Gap Audit", "\u2464 Export"]
+tab_extract, tab_resolve, tab_mpr, tab_chem, tab_gap, tab_export = st.tabs(
+    ["\u2460 Extract", "\u2461 Resolve Conflicts", "\u2462 MPR View",
+     "\u2463 Chemistry Instructions", "\u2464 Gap Audit", "\u2465 Export"]
 )
 
 # ════════════════════════════════════════════════
@@ -991,7 +1130,7 @@ with tab_extract:
                     "Switch to the **\u2461 Resolve Conflicts** tab to proceed."
                 )
             else:
-                st.success("\u2705 No conflicts. Navigate to **\u2462 MPR View** or **\u2464 Export**.")
+                st.success("\u2705 No conflicts. Navigate to **\u2462 MPR View** or **\u2465 Export**.")
 
             # ── Extraction Diagnostics Panel ──────────────
             diag_data: ExtractionDiagnostics | None = st.session_state.get(
@@ -1108,7 +1247,7 @@ with tab_resolve:
                 resolved = apply_resolutions(st.session_state["taxonomy"], rs)
                 st.session_state["resolved_taxonomy"] = resolved
                 st.session_state["resolution_done"] = True
-                st.success("Resolutions applied. Navigate to **\u2462 MPR View** or **\u2464 Export**.")
+                st.success("Resolutions applied. Navigate to **\u2462 MPR View** or **\u2465 Export**.")
                 st.rerun()
         else:
             st.warning(
@@ -1149,11 +1288,242 @@ with tab_mpr:
         render_taxonomy(taxonomy_to_show)
 
 # ════════════════════════════════════════════════
-# TAB 4 – GAP AUDIT
+# TAB 4 – CHEMISTRY INSTRUCTIONS
+# ════════════════════════════════════════════════
+
+with tab_chem:
+    st.markdown("### Chemistry Instructions Designer")
+    st.markdown(
+        "<p style='color:#4a5568; font-size:0.82rem;'>"
+        "Kit-Based \u00b7 Sensory-Anchored \u00b7 Safety-Embedded procedure view"
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    chem_taxonomy = (
+        st.session_state.get("resolved_taxonomy")
+        or st.session_state.get("taxonomy")
+    )
+
+    if not chem_taxonomy:
+        st.info("Run extraction first (Tab \u2460).")
+    else:
+        # Detect chemistry relevance
+        _is_chem = is_chemistry_taxonomy(chem_taxonomy)
+        if not _is_chem:
+            st.warning(
+                "The uploaded documents don't appear to be chemistry-related. "
+                "The Chemistry Instructions view works best with laboratory / "
+                "chemical procedure documents. You can still explore the view below."
+            )
+
+        chem_title = st.text_input(
+            "Procedure Title",
+            value="Chemistry Procedure",
+            key="chem_title_input",
+        )
+
+        if st.button("Build Chemistry Instructions", use_container_width=True, key="btn_chem_build"):
+            chem_instructions = build_chemistry_instructions(chem_taxonomy, chem_title)
+            st.session_state["chem_instructions"] = chem_instructions
+            st.rerun()
+
+        chem_inst: ChemistryInstructionSet | None = st.session_state.get("chem_instructions")
+
+        if chem_inst is not None:
+            # ── Metrics row ──
+            total_steps = len(chem_inst.steps)
+            hazardous = sum(1 for s in chem_inst.steps if s.is_hazardous)
+            pauses = len(chem_inst.safe_pause_indices)
+            ts_count = len(chem_inst.troubleshooting)
+
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("Procedure Steps", total_steps)
+            mc2.metric("Hazardous Steps", hazardous)
+            mc3.metric("Safe Pause Points", pauses)
+            mc4.metric("Troubleshooting Tips", ts_count)
+
+            st.markdown("---")
+
+            # ════════════════════════════════════
+            # ZONE CARDS (The "Kit" Mental Model)
+            # ════════════════════════════════════
+            st.markdown("#### The Kit \u2014 Workspace Zones")
+            st.markdown(
+                "<p style='color:#6b7280; font-size:0.78rem;'>"
+                "Before the first beaker is touched, review the entire landscape.</p>",
+                unsafe_allow_html=True,
+            )
+
+            _zone_css = {
+                KitZone.ZONE_A_SETUP: "chem-zone-a",
+                KitZone.ZONE_B_REAGENTS: "chem-zone-b",
+                KitZone.ZONE_C_REACTION: "chem-zone-c",
+                KitZone.ZONE_D_WASTE: "chem-zone-d",
+            }
+
+            for zone in KitZone:
+                zone_atoms = chem_inst.zones.get(zone, [])
+                css_cls = _zone_css.get(zone, "")
+                desc = ZONE_DESCRIPTIONS.get(zone, "")
+
+                zone_html = f"<div class='chem-zone-card {css_cls}'>"
+                zone_html += f"<div class='chem-zone-label'>{html.escape(zone.value)}</div>"
+                zone_html += f"<div class='chem-zone-desc'>{html.escape(desc)}</div>"
+
+                if zone_atoms:
+                    for atom in zone_atoms:
+                        prereq_badge = (
+                            " <span class='badge-prereq'>PREREQ</span>"
+                            if atom.is_prerequisite else ""
+                        )
+                        zone_html += (
+                            f"<div class='atom-row'>"
+                            f"<span class='atom-param'>{html.escape(atom.parameter)}</span>"
+                            f"<span class='atom-value'>{html.escape(atom.value)}{prereq_badge}</span>"
+                            f"<span class='atom-src'>{html.escape(atom.source_file)}</span>"
+                            f"</div>"
+                        )
+                else:
+                    zone_html += (
+                        "<div style='color:#6b7280; font-size:0.78rem; "
+                        "font-style:italic;'>No items extracted for this zone.</div>"
+                    )
+
+                zone_html += "</div>"
+                st.markdown(zone_html, unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # ════════════════════════════════════
+            # ACTION-RESULT TABLE
+            # ════════════════════════════════════
+            st.markdown("#### Procedure Steps \u2014 Action \u2192 Expected Result")
+            st.markdown(
+                "<p style='color:#6b7280; font-size:0.78rem;'>"
+                "Follow each step in order. Do NOT proceed if the expected "
+                "result does not match.</p>",
+                unsafe_allow_html=True,
+            )
+
+            if chem_inst.steps:
+                for step in chem_inst.steps:
+                    # Determine if this step needs a red box
+                    if step.is_hazardous:
+                        step_html = "<div class='red-box'>"
+                        step_html += (
+                            "<div class='red-box-label'>"
+                            "HAZARDOUS \u2014 Read completely before acting"
+                            "</div>"
+                        )
+                    else:
+                        step_html = "<div style='margin-bottom:0.5rem;'>"
+
+                    step_html += "<table class='ar-table'><tr>"
+                    step_html += f"<td class='ar-step-num'>#{step.step_number}</td>"
+                    step_html += f"<td class='ar-action'>{html.escape(step.action)}</td>"
+                    step_html += f"<td class='ar-result'>{html.escape(step.expected_result)}</td>"
+                    step_html += "</tr></table>"
+
+                    # Safety note
+                    if step.safety_note:
+                        step_html += (
+                            f"<div style='color:#fca5a5; font-size:0.75rem; "
+                            f"padding-left:40px; margin-top:-0.3rem;'>"
+                            f"Safety: {html.escape(step.safety_note)}</div>"
+                        )
+
+                    # Sensory checkpoints
+                    if step.sensory_checkpoints:
+                        _sensory_css = {
+                            SensoryType.VISUAL: "sensory-visual",
+                            SensoryType.AUDITORY: "sensory-auditory",
+                            SensoryType.TACTILE: "sensory-tactile",
+                            SensoryType.OLFACTORY: "sensory-olfactory",
+                        }
+                        _sensory_icons = {
+                            SensoryType.VISUAL: "EYE",
+                            SensoryType.AUDITORY: "EAR",
+                            SensoryType.TACTILE: "HAND",
+                            SensoryType.OLFACTORY: "NOSE",
+                        }
+                        for cp in step.sensory_checkpoints:
+                            css = _sensory_css.get(cp.sensory_type, "")
+                            icon = _sensory_icons.get(cp.sensory_type, "")
+                            step_html += (
+                                f"<span class='sensory-badge {css}'>"
+                                f"{icon}: {html.escape(cp.description)}</span>"
+                            )
+
+                    step_html += "</div>"
+                    st.markdown(step_html, unsafe_allow_html=True)
+
+                    # Safe pause point marker
+                    if step.is_safe_pause_point:
+                        st.markdown(
+                            "<div class='safe-pause'>"
+                            "SAFE PAUSE POINT \u2014 chemicals are stable here; "
+                            "you may step away</div>",
+                            unsafe_allow_html=True,
+                        )
+            else:
+                st.info(
+                    "No procedural steps found. Ensure your source documents "
+                    "contain step-by-step instructions."
+                )
+
+            st.markdown("---")
+
+            # ════════════════════════════════════
+            # TROUBLESHOOTING SIDEBAR
+            # ════════════════════════════════════
+            if chem_inst.troubleshooting:
+                st.markdown("#### Troubleshooting Sidebars")
+                st.markdown(
+                    "<p style='color:#6b7280; font-size:0.78rem;'>"
+                    "If something goes wrong, find the matching step below "
+                    "before continuing.</p>",
+                    unsafe_allow_html=True,
+                )
+                for ts in chem_inst.troubleshooting:
+                    sev_css = (
+                        "ts-card-critical" if ts.severity == "critical"
+                        else ""
+                    )
+                    label_css = (
+                        "ts-label-critical" if ts.severity == "critical"
+                        else "ts-label-warning"
+                    )
+                    ts_html = f"<div class='ts-card {sev_css}'>"
+                    ts_html += (
+                        f"<div class='ts-label {label_css}'>"
+                        f"{html.escape(ts.phase)} \u2014 "
+                        f"{ts.severity.upper()}</div>"
+                    )
+                    ts_html += (
+                        f"<div style='color:#e2e8f0;'>"
+                        f"<strong>Symptom:</strong> "
+                        f"{html.escape(ts.symptom)}</div>"
+                    )
+                    ts_html += (
+                        f"<div style='color:#9ca3af;'>"
+                        f"<strong>Cause:</strong> "
+                        f"{html.escape(ts.probable_cause)}</div>"
+                    )
+                    ts_html += (
+                        f"<div style='color:#86efac;'>"
+                        f"<strong>Action:</strong> "
+                        f"{html.escape(ts.corrective_action)}</div>"
+                    )
+                    ts_html += "</div>"
+                    st.markdown(ts_html, unsafe_allow_html=True)
+
+# ════════════════════════════════════════════════
+# TAB 5 – GAP AUDIT
 # ════════════════════════════════════════════════
 
 with tab_gap:
-    st.markdown("### Step 4 \u00b7 Gap Audit Dashboard")
+    st.markdown("### Step 5 \u00b7 Gap Audit Dashboard")
 
     taxonomy_for_gap = st.session_state.get("resolved_taxonomy") or st.session_state.get("taxonomy")
 
@@ -1163,11 +1533,11 @@ with tab_gap:
         render_gap_audit(taxonomy_for_gap)
 
 # ════════════════════════════════════════════════
-# TAB 5 – EXPORT
+# TAB 6 – EXPORT
 # ════════════════════════════════════════════════
 
 with tab_export:
-    st.markdown("### Step 5 \u00b7 Export Final MPR")
+    st.markdown("### Step 6 \u00b7 Export Final MPR")
 
     taxonomy_for_export = st.session_state.get("resolved_taxonomy") or st.session_state.get("taxonomy")
 
