@@ -22,6 +22,7 @@ from engine import (
     FileExtractionDiag,
     OperationalBrain,
     TechnicalAtom,
+    clear_extraction_cache,
     usage_stats,
 )
 from resolver import (
@@ -319,6 +320,8 @@ with st.sidebar:
     )
 
     if st.button("\U0001f5d1\ufe0f Reset Session", use_container_width=True):
+        clear_extraction_cache()
+        usage_stats.reset()
         for k, v in _fresh_defaults().items():
             st.session_state[k] = v
         st.rerun()
