@@ -464,6 +464,13 @@ def set_cached_extraction(text: str, filename: str, provider: str, model: str, a
     _extraction_cache[key] = atoms_raw
 
 
+def clear_extraction_cache() -> int:
+    """Clear the in-memory extraction cache. Returns the number of entries removed."""
+    count = len(_extraction_cache)
+    _extraction_cache.clear()
+    return count
+
+
 # ---------------------------------------------------------------------------
 # Token usage tracking
 # ---------------------------------------------------------------------------
@@ -498,6 +505,13 @@ class UsageStats:
 
     def record_cache_hit(self):
         self.cache_hits += 1
+
+    def reset(self):
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_cost_usd = 0.0
+        self.calls = 0
+        self.cache_hits = 0
 
     def summary(self) -> dict:
         return {

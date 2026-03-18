@@ -22,6 +22,7 @@ from engine import (
     FileExtractionDiag,
     OperationalBrain,
     TechnicalAtom,
+    clear_extraction_cache,
     usage_stats,
 )
 from resolver import (
@@ -321,6 +322,10 @@ with st.sidebar:
     if st.button("\U0001f5d1\ufe0f Reset Session", use_container_width=True):
         for k, v in _fresh_defaults().items():
             st.session_state[k] = v
+        cleared = clear_extraction_cache()
+        usage_stats.reset()
+        if cleared:
+            log.info("Reset session: cleared %d cached extraction(s)", cleared)
         st.rerun()
 
     # ── Self-Healing Dashboard ─────────────

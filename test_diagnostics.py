@@ -11,6 +11,9 @@ from engine import (
     FileExtractionDiag,
     OperationalBrain,
     TechnicalAtom,
+    clear_extraction_cache,
+    set_cached_extraction,
+    get_cached_extraction,
 )
 
 
@@ -280,3 +283,33 @@ class TestParseAtomsWithDiag:
         atoms = OperationalBrain._parse_atoms(raw, "test.txt", diag)
         assert len(atoms) == 0
         assert diag.llm_raw_response_length == 0
+
+
+# ---------------------------------------------------------------------------
+# Extraction cache clearing
+# ---------------------------------------------------------------------------
+
+
+class TestExtractionCacheClear:
+    def test_clear_removes_cached_entries(self):
+        set_cached_extraction("doc text", "file.txt", "anthropic", "model-1", '[]')
+        assert get_cached_extraction("doc text", "file.txt", "anthropic", "model-1") is not None
+        cleared = clear_extraction_cache()
+        assert cleared >= 1
+        assert get_cached_extraction("doc text", "file.txt", "anthropic", "model-1") is None
+
+    def test_clear_returns_zero_when_empty(self):
+        clear_extraction_cache()  # ensure empty
+        assert clear_extraction_cache() == 0
+
+    def test_cached_bad_response_poisons_retries(self):
+        """Demonstrates the bug: a bad LLM response gets cached and
+        every subsequent extraction returns the same bad result."""
+        bad_response = "Sorry, I cannot extract specs from this document."
+        set_cached_extraction("doc", "f.txt", "anthropic", "m", bad_response)
+        # Simulates what happens on retry — cache returns the bad response
+        cached = get_cached_extraction("doc", "f.txt", "anthropic", "m")
+        assert cached == bad_response
+        # After clearing, cache returns None so a fresh LLM call would be made
+        clear_extraction_cache()
+        assert get_cached_extraction("doc", "f.txt", "anthropic", "m") is None
