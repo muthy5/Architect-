@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 import traceback
@@ -29,6 +30,8 @@ HISTORY_FILE = Path(os.environ.get(
 MAX_HISTORY_ENTRIES = 500          # rolling window
 MAX_RETRIES_DEFAULT = 3
 BACKOFF_BASE = 2                   # seconds
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +215,11 @@ class SelfHealer:
                 k: RecoveryStrategy.from_dict(v)
                 for k, v in data.get("strategies", {}).items()
             }
-        except Exception:
-            # Corrupted file — start fresh
+        except Exception as e:
+            log.warning(
+                "Corrupted heal history file '%s', resetting learned "
+                "strategies: %s", self.history_file, e,
+            )
             self.history = []
             self.strategies = {}
 
@@ -230,8 +236,11 @@ class SelfHealer:
             }
             with open(self.history_file, "w") as f:
                 json.dump(data, f, indent=2, default=str)
-        except Exception:
-            pass  # Non-critical — don't crash on log write failure
+        except Exception as e:
+            log.warning(
+                "Failed to write heal history to '%s': %s",
+                self.history_file, e,
+            )
 
     # ------------------------------------------------------------------
     # Recording
@@ -454,7 +463,11 @@ class SelfHealer:
                             context["_current_strategy"] = strat_name
                             applied = True
                             break
-                        except Exception:
+                        except Exception as handler_err:
+                            log.warning(
+                                "Recovery handler '%s' failed for operation "
+                                "'%s': %s", strat_name, operation, handler_err,
+                            )
                             continue
 
                     elif strat_name == "retry_with_backoff":
